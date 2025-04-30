@@ -4,12 +4,53 @@
     {
       "name": "doc_id",
       "type": "ATOM",
+      "search": true,
       "storeDocValues": true
     },
     {
       "name": "timestamp_epoch_millis",
       "type": "DATE_TIME",
       "dateTimeFormat": "epoch_millis",
+      "storeDocValues": true,
+      "search": true,
+      "childFields": [
+        {
+          "name": "dv",
+          "type": "DATE_TIME",
+          "dateTimeFormat": "epoch_millis",
+          "storeDocValues": true
+        },
+        {
+          "name": "search",
+          "type": "DATE_TIME",
+          "dateTimeFormat": "epoch_millis",
+          "search": true
+        },
+        {
+          "name": "none",
+          "type": "DATE_TIME",
+          "dateTimeFormat": "epoch_millis"
+        },
+        {
+          "name": "mv_dv",
+          "type": "DATE_TIME",
+          "dateTimeFormat": "epoch_millis",
+          "multiValued": true,
+          "storeDocValues": true
+        },
+        {
+          "name": "mv_search",
+          "type": "DATE_TIME",
+          "dateTimeFormat": "epoch_millis",
+          "multiValued": true,
+          "search": true
+        }
+      ]
+    },
+    {
+      "name": "timestamp_strict_date_optional_time",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "strict_date_optional_time",
       "storeDocValues": true,
       "search": true
     },
@@ -19,6 +60,55 @@
       "dateTimeFormat": "yyyy-MM-dd HH:mm:ss",
       "storeDocValues": true,
       "search": true
+    },
+    {
+      "name": "single_stored",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "epoch_millis",
+      "search": true,
+      "store": true
+    },
+    {
+      "name": "multi_stored",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "epoch_millis",
+      "search": true,
+      "multiValued": true,
+      "store": true
+    },
+    {
+      "name": "single_none_stored",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "epoch_millis",
+      "search": true,
+      "store": true
+    },
+    {
+      "name": "multi_none_stored",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "epoch_millis",
+      "search": true,
+      "multiValued": true,
+      "store": true
+    },
+    {
+      "name": "dv_only_single",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "epoch_millis",
+      "storeDocValues": true
+    },
+    {
+      "name": "dv_only_multi",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "epoch_millis",
+      "multiValued": true,
+      "storeDocValues": true
+    },
+    {
+      "name": "stored_only",
+      "type": "DATE_TIME",
+      "dateTimeFormat": "epoch_millis",
+      "store": true
     }
   ]
 }

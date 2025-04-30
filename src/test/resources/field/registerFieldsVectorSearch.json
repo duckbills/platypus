@@ -1,0 +1,171 @@
+{
+  "indexName": "vector_search_index",
+  "field": [
+    {
+      "name": "vector_l2_norm",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "l2_norm",
+      "childFields": [
+        {
+          "name": "no_doc_values",
+          "type": "VECTOR",
+          "search": true,
+          "vectorDimensions": 3,
+          "vectorSimilarity": "l2_norm"
+        }
+      ]
+    },
+    {
+      "name": "vector_cosine",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "cosine",
+      "childFields": [
+        {
+          "name": "normalized",
+          "type": "VECTOR",
+          "search": true,
+          "vectorDimensions": 3,
+          "vectorSimilarity": "normalized_cosine"
+        },
+        {
+          "name": "normalized_doc_values",
+          "type": "VECTOR",
+          "search": true,
+          "storeDocValues": true,
+          "vectorDimensions": 3,
+          "vectorSimilarity": "normalized_cosine"
+        }
+      ]
+    },
+    {
+      "name": "vector_dot",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "dot_product"
+    },
+    {
+      "name": "vector_mip",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "max_inner_product"
+    },
+    {
+      "name": "byte_vector_l2_norm",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "l2_norm",
+      "vectorElementType": "VECTOR_ELEMENT_BYTE",
+      "childFields": [
+        {
+          "name": "no_doc_values",
+          "type": "VECTOR",
+          "search": true,
+          "vectorDimensions": 3,
+          "vectorSimilarity": "l2_norm",
+          "vectorElementType": "VECTOR_ELEMENT_BYTE"
+        }
+      ]
+    },
+    {
+      "name": "byte_vector_cosine",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "cosine",
+      "vectorElementType": "VECTOR_ELEMENT_BYTE"
+    },
+    {
+      "name": "byte_vector_dot",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "dot_product",
+      "vectorElementType": "VECTOR_ELEMENT_BYTE"
+    },
+    {
+      "name": "byte_vector_mip",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "max_inner_product",
+      "vectorElementType": "VECTOR_ELEMENT_BYTE"
+    },
+    {
+      "name": "quantized_vector_4",
+      "type": "VECTOR",
+      "search": true,
+      "vectorDimensions": 4,
+      "vectorSimilarity": "cosine",
+      "vectorIndexingOptions": {
+        "type": "hnsw_scalar_quantized",
+        "quantized_bits": 4
+      }
+    },
+    {
+      "name": "quantized_vector_7",
+      "type": "VECTOR",
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "cosine",
+      "vectorIndexingOptions": {
+        "type": "hnsw_scalar_quantized",
+        "quantized_bits": 7
+      },
+      "childFields": [
+        {
+          "name": "normalized",
+          "type": "VECTOR",
+          "search": true,
+          "vectorDimensions": 3,
+          "vectorSimilarity": "normalized_cosine",
+          "vectorIndexingOptions": {
+            "type": "hnsw_scalar_quantized",
+            "quantized_bits": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "filter",
+      "type": "ATOM",
+      "search": true,
+      "storeDocValues": true
+    },
+    {
+      "name": "vector_not_search",
+      "type": "VECTOR",
+      "storeDocValues": true,
+      "vectorDimensions": 3
+    },
+    {
+      "name": "vector_no_data",
+      "type": "VECTOR",
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "dot_product"
+    },
+    {
+      "name": "byte_vector_no_data",
+      "type": "VECTOR",
+      "search": true,
+      "vectorDimensions": 3,
+      "vectorSimilarity": "dot_product",
+      "vectorElementType": "VECTOR_ELEMENT_BYTE"
+    }
+  ]
+}

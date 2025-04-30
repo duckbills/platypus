@@ -5,7 +5,6 @@
       "name": "value",
       "type": "ATOM",
       "storeDocValues": true,
-      "group": true,
       "eagerFieldGlobalOrdinals": true
     },
     {

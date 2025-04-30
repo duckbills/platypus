@@ -15,16 +15,18 @@
  */
 package com.yelp.nrtsearch.server.monitoring;
 
-import com.yelp.nrtsearch.server.luceneserver.GlobalState;
-import io.prometheus.client.Collector;
-import io.prometheus.client.GaugeMetricFamily;
-import java.io.File;
+import com.google.common.annotations.VisibleForTesting;
+import com.yelp.nrtsearch.server.state.GlobalState;
+import io.prometheus.metrics.core.metrics.Gauge;
+import io.prometheus.metrics.model.registry.MultiCollector;
+import io.prometheus.metrics.model.snapshots.MetricSnapshot;
+import io.prometheus.metrics.model.snapshots.MetricSnapshots;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.file.PathUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,8 +34,17 @@ import org.slf4j.LoggerFactory;
  * Collector to produce metrics for total size of index directories. Unlike the value produced by
  * {@link IndexMetrics}, this includes files not in the current index version.
  */
-public class DirSizeCollector extends Collector {
+public class DirSizeCollector implements MultiCollector {
   private static final Logger logger = LoggerFactory.getLogger(DirSizeCollector.class);
+
+  @VisibleForTesting
+  static final Gauge indexDirSize =
+      Gauge.builder()
+          .name("nrt_index_dir_size_bytes")
+          .help("Total size of all files in index directory.")
+          .labelNames("index")
+          .build();
+
   private final GlobalState globalState;
 
   public DirSizeCollector(GlobalState globalState) {
@@ -41,29 +52,25 @@ public class DirSizeCollector extends Collector {
   }
 
   @Override
-  public List<MetricFamilySamples> collect() {
-    List<MetricFamilySamples> mfs = new ArrayList<>();
-
-    GaugeMetricFamily indexDirSize =
-        new GaugeMetricFamily(
-            "nrt_index_dir_size_bytes",
-            "Total size of all files in index directory.",
-            Collections.singletonList("index"));
-    mfs.add(indexDirSize);
+  public MetricSnapshots collect() {
+    List<MetricSnapshot> metrics = new ArrayList<>();
 
     try {
       Set<String> indexNames = globalState.getIndexNames();
       for (String indexName : indexNames) {
         Path indexDataPath = globalState.getIndexDir(indexName);
-        File indexDataFile = indexDataPath.toFile();
-        if (indexDataFile.exists()) {
-          long dirSizeBytes = FileUtils.sizeOfDirectory(indexDataFile);
-          indexDirSize.addMetric(Collections.singletonList(indexName), (double) dirSizeBytes);
+        if (Files.exists(indexDataPath)) {
+          if (Files.isSymbolicLink(indexDataPath)) {
+            indexDataPath = Files.readSymbolicLink(indexDataPath);
+          }
+          long dirSizeBytes = PathUtils.sizeOfDirectory(indexDataPath);
+          indexDirSize.labelValues(indexName).set((double) dirSizeBytes);
         }
       }
+      metrics.add(indexDirSize.collect());
     } catch (Exception e) {
       logger.warn("Error getting directory size metric: ", e);
     }
-    return mfs;
+    return new MetricSnapshots(metrics);
   }
 }

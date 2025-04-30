@@ -15,24 +15,9 @@
  */
 package com.yelp.nrtsearch.server.grpc;
 
-import static com.yelp.nrtsearch.server.grpc.GrpcServer.rmDir;
-import static com.yelp.nrtsearch.server.grpc.ReplicationServerTest.validateSearchResults;
-
-import com.amazonaws.auth.AnonymousAWSCredentials;
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
-import com.yelp.nrtsearch.server.LuceneServerTestConfigurationFactory;
-import com.yelp.nrtsearch.server.backup.Archiver;
-import com.yelp.nrtsearch.server.backup.ArchiverImpl;
-import com.yelp.nrtsearch.server.backup.Tar;
-import com.yelp.nrtsearch.server.backup.TarImpl;
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
-import com.yelp.nrtsearch.server.luceneserver.GlobalState;
-import io.findify.s3mock.S3Mock;
+import com.yelp.nrtsearch.server.config.IndexStartConfig;
 import io.grpc.testing.GrpcCleanupRule;
 import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
@@ -44,45 +29,39 @@ public class AckedCopyTest {
    * end of test.
    */
   @Rule public final GrpcCleanupRule grpcCleanup = new GrpcCleanupRule();
+
   /**
    * This rule ensure the temporary folder which maintains indexes are cleaned up after each test
    */
   @Rule public final TemporaryFolder folder = new TemporaryFolder();
 
-  private GrpcServer luceneServerPrimary;
-  private GrpcServer replicationServerPrimary;
-
-  private GrpcServer luceneServerSecondary;
-  private GrpcServer replicationServerSecondary;
-
-  private final String BUCKET_NAME = "archiver-unittest";
-  private Archiver archiver;
-  private S3Mock api;
-  private AmazonS3 s3;
-  private Path s3Directory;
-  private Path archiverDirectory;
-
   @After
-  public void tearDown() throws IOException {
-    api.shutdown();
-    luceneServerPrimary.getGlobalState().close();
-    luceneServerSecondary.getGlobalState().close();
-    rmDir(Paths.get(luceneServerPrimary.getIndexDir()).getParent());
-    rmDir(Paths.get(luceneServerSecondary.getIndexDir()).getParent());
+  public void cleanup() {
+    TestServer.cleanupAll();
   }
 
-  public void setUp(int chunkSize, int ackEvery, int maxInFlight) throws IOException {
-    // setup S3 for backup/restore
-    s3Directory = folder.newFolder("s3").toPath();
-    archiverDirectory = folder.newFolder("archiver").toPath();
-    api = S3Mock.create(8011, s3Directory.toAbsolutePath().toString());
-    api.start();
-    s3 = new AmazonS3Client(new AnonymousAWSCredentials());
-    s3.setEndpoint("http://127.0.0.1:8011");
-    s3.createBucket(BUCKET_NAME);
-    archiver =
-        new ArchiverImpl(s3, BUCKET_NAME, archiverDirectory, new TarImpl(Tar.CompressionMode.LZ4));
+  @Test
+  public void ackAllLimit1() throws IOException, InterruptedException {
+    testReplication(2, 1, 1);
+  }
 
+  @Test
+  public void ack2Limit2() throws IOException, InterruptedException {
+    testReplication(2, 2, 2);
+  }
+
+  @Test
+  public void ack2Limit4() throws IOException, InterruptedException {
+    testReplication(2, 2, 4);
+  }
+
+  @Test
+  public void ack2Limit2LargeChunk() throws IOException, InterruptedException {
+    testReplication(1024, 2, 2);
+  }
+
+  private void testReplication(int chunkSize, int ackEvery, int maxInFlight)
+      throws IOException, InterruptedException {
     String extraConfig =
         String.join(
             "\n",
@@ -92,134 +71,44 @@ public class AckedCopyTest {
             "  ackEvery: " + ackEvery,
             "  maxInFlight: " + maxInFlight);
 
-    // set up primary servers
-    String testIndex = "test_index";
-    LuceneServerConfiguration luceneServerPrimaryConfiguration =
-        LuceneServerTestConfigurationFactory.getConfig(Mode.PRIMARY, folder.getRoot(), extraConfig);
-    GlobalState globalStatePrimary = GlobalState.createState(luceneServerPrimaryConfiguration);
-    luceneServerPrimary =
-        new GrpcServer(
-            grpcCleanup,
-            luceneServerPrimaryConfiguration,
-            folder,
-            false,
-            globalStatePrimary,
-            luceneServerPrimaryConfiguration.getIndexDir(),
-            testIndex,
-            globalStatePrimary.getPort(),
-            archiver);
-    replicationServerPrimary =
-        new GrpcServer(
-            grpcCleanup,
-            luceneServerPrimaryConfiguration,
-            folder,
-            true,
-            globalStatePrimary,
-            luceneServerPrimaryConfiguration.getIndexDir(),
-            testIndex,
-            luceneServerPrimaryConfiguration.getReplicationPort(),
-            archiver);
-    // set up secondary servers
-    LuceneServerConfiguration luceneServerSecondaryConfiguration =
-        LuceneServerTestConfigurationFactory.getConfig(Mode.REPLICA, folder.getRoot(), extraConfig);
-    GlobalState globalStateSecondary = GlobalState.createState(luceneServerSecondaryConfiguration);
-
-    luceneServerSecondary =
-        new GrpcServer(
-            grpcCleanup,
-            luceneServerSecondaryConfiguration,
-            folder,
-            false,
-            globalStateSecondary,
-            luceneServerSecondaryConfiguration.getIndexDir(),
-            testIndex,
-            globalStateSecondary.getPort(),
-            archiver);
-    replicationServerSecondary =
-        new GrpcServer(
-            grpcCleanup,
-            luceneServerSecondaryConfiguration,
-            folder,
-            true,
-            globalStateSecondary,
-            luceneServerSecondaryConfiguration.getIndexDir(),
-            testIndex,
-            globalStateSecondary.getReplicationPort(),
-            archiver);
-  }
-
-  @Test
-  public void ackAllLimit1() throws IOException, InterruptedException {
-    setUp(2, 1, 1);
-    testReplication();
-  }
-
-  @Test
-  public void ack2Limit2() throws IOException, InterruptedException {
-    setUp(2, 2, 2);
-    testReplication();
-  }
-
-  @Test
-  public void ack2Limit4() throws IOException, InterruptedException {
-    setUp(2, 2, 4);
-    testReplication();
-  }
-
-  @Test
-  public void ack2Limit2LargeChunk() throws IOException, InterruptedException {
-    setUp(1024, 2, 2);
-    testReplication();
-  }
-
-  private void testReplication() throws IOException, InterruptedException {
     // index 2 documents to primary
-    GrpcServer.TestServer testServerPrimary =
-        new GrpcServer.TestServer(luceneServerPrimary, true, Mode.PRIMARY);
-    testServerPrimary.addDocuments();
+    TestServer testServerPrimary =
+        TestServer.builder(folder)
+            .withAutoStartConfig(
+                true, Mode.PRIMARY, 0, IndexStartConfig.IndexDataLocationType.LOCAL)
+            .withAdditionalConfig(extraConfig)
+            .build();
+    testServerPrimary.createSimpleIndex("test_index");
+    testServerPrimary.startPrimaryIndex("test_index", -1, null);
+    testServerPrimary.addSimpleDocs("test_index", 1, 2);
+
     // refresh (also sends NRTPoint to replicas, but none started at this point)
-    luceneServerPrimary
-        .getBlockingStub()
-        .refresh(RefreshRequest.newBuilder().setIndexName("test_index").build());
+    testServerPrimary.refresh("test_index");
+    testServerPrimary.verifySimpleDocIds("test_index", 1, 2);
+
     // startIndex replica
-    GrpcServer.TestServer testServerReplica =
-        new GrpcServer.TestServer(luceneServerSecondary, true, Mode.REPLICA);
+    TestServer testServerReplica =
+        TestServer.builder(folder)
+            .withAutoStartConfig(
+                true,
+                Mode.REPLICA,
+                testServerPrimary.getReplicationPort(),
+                IndexStartConfig.IndexDataLocationType.LOCAL)
+            .withAdditionalConfig(extraConfig)
+            .build();
+    testServerReplica.registerWithPrimary("test_index");
+
     // add 2 more docs to primary
-    testServerPrimary.addDocuments();
+    testServerPrimary.addSimpleDocs("test_index", 3, 4);
 
     // publish new NRT point (retrieve the current searcher version on primary)
-    SearcherVersion searcherVersionPrimary =
-        replicationServerPrimary
-            .getReplicationServerBlockingStub()
-            .writeNRTPoint(IndexName.newBuilder().setIndexName("test_index").build());
+    testServerPrimary.refresh("test_index");
 
     // primary should show 4 hits now
-    SearchResponse searchResponsePrimary =
-        luceneServerPrimary
-            .getBlockingStub()
-            .search(
-                SearchRequest.newBuilder()
-                    .setIndexName(luceneServerPrimary.getTestIndex())
-                    .setStartHit(0)
-                    .setTopHits(10)
-                    .setVersion(searcherVersionPrimary.getVersion())
-                    .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
-                    .build());
+    testServerPrimary.verifySimpleDocs("test_index", 4);
 
     // replica should too!
-    SearchResponse searchResponseSecondary =
-        luceneServerSecondary
-            .getBlockingStub()
-            .search(
-                SearchRequest.newBuilder()
-                    .setIndexName(luceneServerSecondary.getTestIndex())
-                    .setStartHit(0)
-                    .setTopHits(10)
-                    .setVersion(searcherVersionPrimary.getVersion())
-                    .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
-                    .build());
-
-    validateSearchResults(searchResponsePrimary);
-    validateSearchResults(searchResponseSecondary);
+    testServerReplica.waitForReplication("test_index");
+    testServerReplica.verifySimpleDocIds("test_index", 1, 2, 3, 4);
   }
 }

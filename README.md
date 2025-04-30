@@ -1,7 +1,9 @@
-[![Coverage](.github/badges/jacoco.svg)](jacoco.svg)
+[![Coverage](https://raw.githubusercontent.com/Yelp/nrtsearch/refs/heads/badge_main/jacoco.svg)](jacoco.svg) [![Docs](https://readthedocs.org/projects/nrtsearch/badge/?version=latest)](https://nrtsearch.readthedocs.io/en/latest/)
 # nrtSearch
 A high performance gRPC server, with optional REST APIs on top of [Apache Lucene](http://lucene.apache.org/) version 8.x source, exposing Lucene's
 core functionality over a simple gRPC based API.
+
+Documentation is available at [readthedocs](https://nrtsearch.readthedocs.io/en/latest/).
 
 # Features
 * Relies on Lucene's [near-real-time segment replication](http://blog.mikemccandless.com/2017/09/lucenes-near-real-time-segment-index.html) for data replication. This means, a dedicated primary/writer node takes care of indexing operations and expensive operations like [segment merges](http://blog.mikemccandless.com/2011/02/visualizing-lucenes-segment-merges.html). This allows the replicas' system resources to be dedicated entirely for search queries. This behavior is in contrast to the document replication approach taken by some other popular search engines based on lucene like elasticsearch where every node is a writer and a reader.
@@ -45,13 +47,13 @@ In the home directory.
 ./gradlew clean installDist test
 ```
 
-Note: This code has been tested on *Java14*
+Note: This code has been tested on *Java21*
 
 
 # Run gRPC Server
 
 ```
-./build/install/nrtsearch/bin/lucene-server
+./build/install/nrtsearch/bin/nrtsearch_server
 ```
 
 # Build gRPC Gateway
@@ -70,7 +72,7 @@ Note: This code has been tested on *Java14*
 ## Create Index
 
 ```
-./build/install/nrtsearch/bin/lucene-client createIndex --indexName  testIdx
+./build/install/nrtsearch/bin/nrtsearch_client createIndex --indexName  testIdx
 ```
 
 ```
@@ -80,7 +82,7 @@ curl -XPOST localhost:<REST_PORT>/v1/create_index -d '{"indexName": "testIdx"}'
 ## Update Settings
 
 ```
-./build/install/nrtsearch/bin/lucene-client settings -f settings.json
+./build/install/nrtsearch/bin/nrtsearch_client settings -f settings.json
 cat settings.json
 {             "indexName": "testIdx",
               "directory": "MMapDirectory",
@@ -94,7 +96,7 @@ cat settings.json
 ## Start Index
 
 ```
-./build/install/nrtsearch/bin/lucene-client startIndex -f startIndex.json
+./build/install/nrtsearch/bin/nrtsearch_client startIndex -f startIndex.json
 cat startIndex.json
 {
   "indexName" : "testIdx"
@@ -104,13 +106,13 @@ cat startIndex.json
 ## RegisterFields
 
 ```
-./build/install/nrtsearch/bin/lucene-client registerFields -f registerFields.json
+./build/install/nrtsearch/bin/nrtsearch_client registerFields -f registerFields.json
 cat registerFields.json
 {             "indexName": "testIdx",
               "field":
               [
                       { "name": "doc_id", "type": "ATOM", "storeDocValues": true},
-                      { "name": "vendor_name", "type": "TEXT" , "search": true, "store": true, "tokenize": true},
+                      { "name": "vendor_name", "type": "TEXT" , "search": true, "store": true},
                       { "name": "license_no",  "type": "INT", "multiValued": true, "storeDocValues": true}
               ]
 }
@@ -119,7 +121,7 @@ cat registerFields.json
 ## Add Documents
 
 ```
-./build/install/nrtsearch/bin/lucene-client addDocuments -i testIdx -f docs.csv -t csv
+./build/install/nrtsearch/bin/nrtsearch_client addDocuments -i testIdx -f docs.csv -t csv
 cat docs.csv
 doc_id,vendor_name,license_no
 0,first vendor,100;200
@@ -129,7 +131,7 @@ doc_id,vendor_name,license_no
 ## Search
 
 ```
-./build/install/nrtsearch/bin/lucene-client search -f search.json
+./build/install/nrtsearch/bin/nrtsearch_client search -f search.json
 cat search.json
 {
         "indexName": "testIdx",
@@ -157,11 +159,5 @@ This should create a src/main/docs/index.html file that can be seen in your loca
 This tool indexes yelp reviews available at [Yelp dataset challenge](https://www.yelp.com/dataset). It runs a default version with only 1k reviews of the `reviews.json` or you could download the yelp dataset and place the review.json in the user.home dir and the tool will use that instead. The complete review.json should have close to 7Million reviews. The tool runs multi-threaded indexing and a search thread in parallel reporting the `totalHits`.  Command to run this specific test:
 
 ```
-./gradlew clean installDist :test -PincludePerfTests=* --tests "com.yelp.nrtsearch.server.YelpReviewsTest.runYelpReviews" --info
+./gradlew clean installDist :test -PincludePerfTests=* --tests "com.yelp.nrtsearch.yelp_reviews.YelpReviewsTest.runYelpReviews" --info
 ```
-
-# Suggestions
-
-This test indexes businesses, creates an Infix Suggester and fetches suggestions. It requires a host, a port and a writeable directory in a standalone nrtSearch server.
-
-```./gradlew :test -DsuggestTmp=remoteServerDir -DsuggestHost=yourStandaloneServerHost -DsuggestPort=yourStandaloneServerHost --tests "com.yelp.nrtsearch.server.YelpSuggestTest"```

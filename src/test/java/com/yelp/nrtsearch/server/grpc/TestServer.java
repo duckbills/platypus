@@ -15,51 +15,45 @@
  */
 package com.yelp.nrtsearch.server.grpc;
 
+import static com.yelp.nrtsearch.server.grpc.ReplicationServerClient.BINARY_MAGIC;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import com.amazonaws.auth.AnonymousAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
-import com.amazonaws.services.s3.transfer.TransferManager;
-import com.amazonaws.services.s3.transfer.TransferManagerBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
-import com.yelp.nrtsearch.server.backup.Archiver;
-import com.yelp.nrtsearch.server.backup.ArchiverImpl;
-import com.yelp.nrtsearch.server.backup.BackupDiffManager;
-import com.yelp.nrtsearch.server.backup.ContentDownloader;
-import com.yelp.nrtsearch.server.backup.ContentDownloaderImpl;
-import com.yelp.nrtsearch.server.backup.FileCompressAndUploader;
-import com.yelp.nrtsearch.server.backup.IndexArchiver;
-import com.yelp.nrtsearch.server.backup.NoTarImpl;
-import com.yelp.nrtsearch.server.backup.Tar;
-import com.yelp.nrtsearch.server.backup.TarImpl;
-import com.yelp.nrtsearch.server.backup.VersionManager;
+import com.yelp.nrtsearch.clientlib.Node;
 import com.yelp.nrtsearch.server.config.IndexStartConfig.IndexDataLocationType;
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.config.StateConfig.StateBackendType;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest.MultiValuedField;
-import com.yelp.nrtsearch.server.grpc.LuceneServer.LuceneServerImpl;
-import com.yelp.nrtsearch.server.grpc.LuceneServer.ReplicationServerImpl;
+import com.yelp.nrtsearch.server.grpc.NrtsearchServer.LuceneServerImpl;
+import com.yelp.nrtsearch.server.grpc.NrtsearchServer.ReplicationServerImpl;
 import com.yelp.nrtsearch.server.grpc.SearchResponse.Hit;
-import com.yelp.nrtsearch.server.luceneserver.GlobalState;
-import com.yelp.nrtsearch.server.luceneserver.IndexState;
-import com.yelp.nrtsearch.server.utils.FileUtil;
+import com.yelp.nrtsearch.server.index.IndexState;
+import com.yelp.nrtsearch.server.index.IndexStateManager;
+import com.yelp.nrtsearch.server.index.ShardState;
+import com.yelp.nrtsearch.server.remote.RemoteBackend;
+import com.yelp.nrtsearch.server.remote.s3.S3Backend;
+import com.yelp.nrtsearch.server.state.GlobalState;
+import com.yelp.nrtsearch.server.utils.FileUtils;
+import com.yelp.nrtsearch.test_utils.AmazonS3Provider;
 import io.findify.s3mock.S3Mock;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
-import io.prometheus.client.CollectorRegistry;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.io.ByteArrayInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -72,10 +66,14 @@ import org.junit.rules.TemporaryFolder;
 
 public class TestServer {
   private static final List<TestServer> createdServers = new ArrayList<>();
+  private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
   private final Gson gson = new GsonBuilder().serializeNulls().create();
   public static final String SERVICE_NAME = "test_server";
   public static final String TEST_BUCKET = "test-server-data-bucket";
   public static final String S3_ENDPOINT = "http://127.0.0.1:8011";
+  public static final String DISCOVERY_FILE = "primary_node.json";
+  public static final long DEFAULT_REPLICATION_WAIT_TIMEOUT_MS = 30000;
+  public static final long DEFAULT_PRIMARY_REGISTER_TIMEOUT_MS = 30000;
   public static final List<String> simpleFieldNames = List.of("id", "field1", "field2");
   public static final List<Field> simpleFields =
       List.of(
@@ -99,13 +97,15 @@ public class TestServer {
 
   private static S3Mock api;
 
-  private final LuceneServerConfiguration configuration;
+  private final NrtsearchConfig configuration;
+  private final boolean writeDiscoveryFile;
+  private final Path discoveryFilePath;
   private Server server;
   private Server replicationServer;
-  private LuceneServerClient client;
+  private NrtsearchClient client;
+  private ReplicationServerClient replicationClient;
   private LuceneServerImpl serverImpl;
-  private Archiver legacyArchiver;
-  private Archiver indexArchiver;
+  private RemoteBackend remoteBackend;
 
   public static void initS3(TemporaryFolder folder) throws IOException {
     if (api == null) {
@@ -116,7 +116,7 @@ public class TestServer {
   }
 
   public static void cleanupAll() {
-    createdServers.forEach(TestServer::cleanup);
+    createdServers.forEach(TestServer::stop);
     createdServers.clear();
     if (api != null) {
       api.shutdown();
@@ -124,53 +124,20 @@ public class TestServer {
     }
   }
 
-  public TestServer(LuceneServerConfiguration configuration) throws IOException {
+  public TestServer(
+      NrtsearchConfig configuration, boolean writeDiscoveryFile, Path discoveryFilePath)
+      throws IOException {
     this.configuration = configuration;
+    this.writeDiscoveryFile = writeDiscoveryFile;
+    this.discoveryFilePath = discoveryFilePath;
     createdServers.add(this);
     restart();
   }
 
-  private IndexArchiver createIndexArchiver(Path archiverDir) throws IOException {
-    Files.createDirectories(archiverDir);
-
-    AmazonS3 s3 = new AmazonS3Client(new AnonymousAWSCredentials());
-    s3.setEndpoint(S3_ENDPOINT);
+  private RemoteBackend createRemoteBackend() {
+    AmazonS3 s3 = AmazonS3Provider.createTestS3Client(S3_ENDPOINT);
     s3.createBucket(TEST_BUCKET);
-    TransferManager transferManager =
-        TransferManagerBuilder.standard().withS3Client(s3).withShutDownThreadPools(false).build();
-
-    ContentDownloader contentDownloader =
-        new ContentDownloaderImpl(
-            new TarImpl(TarImpl.CompressionMode.LZ4), transferManager, TEST_BUCKET, true);
-    FileCompressAndUploader fileCompressAndUploader =
-        new FileCompressAndUploader(
-            new TarImpl(TarImpl.CompressionMode.LZ4), transferManager, TEST_BUCKET);
-    ContentDownloader contentDownloaderNoTar =
-        new ContentDownloaderImpl(new NoTarImpl(), transferManager, TEST_BUCKET, true);
-    FileCompressAndUploader fileCompressAndUploaderNoTar =
-        new FileCompressAndUploader(new NoTarImpl(), transferManager, TEST_BUCKET);
-    VersionManager versionManager = new VersionManager(s3, TEST_BUCKET);
-    BackupDiffManager backupDiffManagerPrimary =
-        new BackupDiffManager(
-            contentDownloaderNoTar, fileCompressAndUploaderNoTar, versionManager, archiverDir);
-
-    return new IndexArchiver(
-        backupDiffManagerPrimary,
-        fileCompressAndUploader,
-        contentDownloader,
-        versionManager,
-        archiverDir,
-        false);
-  }
-
-  private Archiver createLegacyArchiver(Path archiverDir) throws IOException {
-    Files.createDirectories(archiverDir);
-
-    AmazonS3 s3 = new AmazonS3Client(new AnonymousAWSCredentials());
-    s3.setEndpoint(S3_ENDPOINT);
-    s3.createBucket(TEST_BUCKET);
-    return new ArchiverImpl(
-        s3, TEST_BUCKET, archiverDir, new TarImpl(Tar.CompressionMode.LZ4), true);
+    return new S3Backend(configuration, s3);
   }
 
   public void restart() throws IOException {
@@ -178,24 +145,44 @@ public class TestServer {
   }
 
   public void restart(boolean clearData) throws IOException {
-    cleanup(clearData);
-    legacyArchiver = createLegacyArchiver(Paths.get(configuration.getArchiveDirectory()));
-    indexArchiver = createIndexArchiver(Paths.get(configuration.getArchiveDirectory()));
+    stop(clearData);
+    remoteBackend = createRemoteBackend();
     serverImpl =
         new LuceneServerImpl(
-            configuration,
-            legacyArchiver,
-            indexArchiver,
-            new CollectorRegistry(),
-            Collections.emptyList());
+            configuration, remoteBackend, new PrometheusRegistry(), Collections.emptyList());
 
     replicationServer =
         ServerBuilder.forPort(0)
-            .addService(new ReplicationServerImpl(serverImpl.getGlobalState()))
+            .addService(
+                new ReplicationServerImpl(
+                    serverImpl.getGlobalState(), configuration.getVerifyReplicationIndexId()))
             .build()
             .start();
+    serverImpl.getGlobalState().replicationStarted(replicationServer.getPort());
+
+    if (writeDiscoveryFile) {
+      writeDiscoveryFile(replicationServer.getPort());
+    }
+
     server = ServerBuilder.forPort(0).addService(serverImpl).build().start();
-    client = new LuceneServerClient("localhost", server.getPort());
+    client = new NrtsearchClient("localhost", server.getPort());
+    replicationClient = new ReplicationServerClient("localhost", replicationServer.getPort());
+  }
+
+  private void writeDiscoveryFile(int replicationPort) throws IOException {
+    Node serverNode = new Node("localhost", replicationPort);
+    writeNodeFile(Collections.singletonList(serverNode));
+  }
+
+  private void writeNodeFile(List<Node> nodes) throws IOException {
+    writeFile(OBJECT_MAPPER.writeValueAsString(nodes));
+  }
+
+  private void writeFile(String contents) throws IOException {
+    String filePathStr = discoveryFilePath.toString();
+    try (FileOutputStream outputStream = new FileOutputStream(filePathStr)) {
+      outputStream.write(contents.getBytes());
+    }
   }
 
   public int getPort() {
@@ -214,28 +201,28 @@ public class TestServer {
     return serverImpl.getGlobalState();
   }
 
-  public LuceneServerClient getClient() {
+  public NrtsearchClient getClient() {
     return client;
   }
 
-  public Archiver getLegacyArchiver() {
-    return legacyArchiver;
+  public ReplicationServerClient getReplicationClient() {
+    return replicationClient;
   }
 
-  public Archiver getIndexArchiver() {
-    return indexArchiver;
+  public RemoteBackend getRemoteBackend() {
+    return remoteBackend;
   }
 
-  public void cleanup() {
-    cleanup(false);
+  public void stop() {
+    stop(false);
   }
 
-  public void cleanup(boolean clearData) {
+  public void stop(boolean clearData) {
     if (serverImpl != null) {
       GlobalState globalState = serverImpl.getGlobalState();
       for (String indexName : globalState.getIndexNames()) {
         try {
-          IndexState indexState = globalState.getIndex(indexName);
+          IndexState indexState = globalState.getIndexOrThrow(indexName);
           if (indexState.isStarted()) {
             indexState.close();
           }
@@ -245,7 +232,7 @@ public class TestServer {
       }
       if (clearData) {
         try {
-          FileUtil.deleteAllFiles(globalState.getIndexDirBase());
+          FileUtils.deleteAllFiles(globalState.getIndexDirBase());
         } catch (Exception e) {
           throw new RuntimeException(e);
         }
@@ -266,6 +253,10 @@ public class TestServer {
       } catch (InterruptedException ignore) {
       }
       server = null;
+    }
+    if (replicationClient != null) {
+      replicationClient.close();
+      replicationClient = null;
     }
     if (replicationServer != null) {
       replicationServer.shutdown();
@@ -372,6 +363,10 @@ public class TestServer {
     startIndex(builder.build());
   }
 
+  public StartIndexResponse startIndexV2(StartIndexV2Request startIndexRequest) {
+    return client.getBlockingStub().startIndexV2(startIndexRequest);
+  }
+
   public DummyResponse stopIndex(StopIndexRequest stopIndexRequest) {
     return client.getBlockingStub().stopIndex(stopIndexRequest);
   }
@@ -435,17 +430,18 @@ public class TestServer {
   public void addSimpleDocs(String indexName, int... ids) {
     List<AddDocumentRequest> requests = new ArrayList<>();
     for (int id : ids) {
-      requests.add(
-          AddDocumentRequest.newBuilder()
-              .setIndexName(indexName)
-              .putFields("id", MultiValuedField.newBuilder().addValue(String.valueOf(id)).build())
-              .putFields(
-                  "field1", MultiValuedField.newBuilder().addValue(String.valueOf(id * 3)).build())
-              .putFields(
-                  "field2", MultiValuedField.newBuilder().addValue(String.valueOf(id * 5)).build())
-              .build());
+      requests.add(getSimpleDocRequest(indexName, id));
     }
     addDocs(requests.stream());
+  }
+
+  public AddDocumentRequest getSimpleDocRequest(String indexName, int id) {
+    return AddDocumentRequest.newBuilder()
+        .setIndexName(indexName)
+        .putFields("id", MultiValuedField.newBuilder().addValue(String.valueOf(id)).build())
+        .putFields("field1", MultiValuedField.newBuilder().addValue(String.valueOf(id * 3)).build())
+        .putFields("field2", MultiValuedField.newBuilder().addValue(String.valueOf(id * 5)).build())
+        .build();
   }
 
   public void verifyFieldName(String indexName, String fieldName) {
@@ -468,6 +464,7 @@ public class TestServer {
                     .setTopHits(expectedCount + 1)
                     .setStartHit(0)
                     .build());
+
     assertEquals(expectedCount, response.getHitsCount());
     for (Hit hit : response.getHitsList()) {
       int id = Integer.parseInt(hit.getFieldsOrThrow("id").getFieldValue(0).getTextValue());
@@ -478,6 +475,34 @@ public class TestServer {
     }
   }
 
+  public void verifySimpleDocIds(String indexName, int... ids) {
+    Set<Integer> uniqueIds = new HashSet<>();
+    for (int id : ids) {
+      uniqueIds.add(id);
+    }
+    SearchResponse response =
+        client
+            .getBlockingStub()
+            .search(
+                SearchRequest.newBuilder()
+                    .setIndexName(indexName)
+                    .addAllRetrieveFields(simpleFieldNames)
+                    .setTopHits(uniqueIds.size() + 1)
+                    .setStartHit(0)
+                    .build());
+    assertEquals(uniqueIds.size(), response.getHitsCount());
+    Set<Integer> uniqueHitIds = new HashSet<>();
+    for (Hit hit : response.getHitsList()) {
+      int id = Integer.parseInt(hit.getFieldsOrThrow("id").getFieldValue(0).getTextValue());
+      int f1 = hit.getFieldsOrThrow("field1").getFieldValue(0).getIntValue();
+      int f2 = Integer.parseInt(hit.getFieldsOrThrow("field2").getFieldValue(0).getTextValue());
+      assertEquals(id * 3, f1);
+      assertEquals(id * 5, f2);
+      uniqueHitIds.add(id);
+    }
+    assertEquals(uniqueIds, uniqueHitIds);
+  }
+
   public void refresh(String indexName) {
     client.refresh(indexName);
   }
@@ -486,8 +511,79 @@ public class TestServer {
     client.commit(indexName);
   }
 
+  public void deleteAllDocuments(String indexName) {
+    client.deleteAllDocuments(indexName);
+  }
+
   public void deleteIndex(String indexName) {
     client.deleteIndex(indexName);
+  }
+
+  public void waitForReplication(String indexName) throws IOException {
+    waitForReplication(indexName, DEFAULT_REPLICATION_WAIT_TIMEOUT_MS);
+  }
+
+  public void waitForReplication(String indexName, long timeoutMs) throws IOException {
+    ShardState shardState = getGlobalState().getIndexOrThrow(indexName).getShard(0);
+    if (!shardState.isReplica()) {
+      throw new IllegalStateException("Must be called on replica index");
+    }
+    long start = System.currentTimeMillis();
+    while (shardState.nrtReplicaNode.isCopying()
+        && (System.currentTimeMillis() - start) < timeoutMs) {
+      try {
+        Thread.sleep(20);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+    }
+    if (shardState.nrtReplicaNode.isCopying()) {
+      throw new RuntimeException("Timed out waiting for replication");
+    }
+  }
+
+  public void registerWithPrimary(String indexName) throws IOException {
+    registerWithPrimary(indexName, DEFAULT_PRIMARY_REGISTER_TIMEOUT_MS);
+  }
+
+  public void registerWithPrimary(String indexName, long timeoutMs) throws IOException {
+    IndexStateManager indexStateManager = getGlobalState().getIndexStateManagerOrThrow(indexName);
+    ShardState shardState = indexStateManager.getCurrent().getShard(0);
+    if (!shardState.isReplica()) {
+      throw new IllegalStateException("Must be called on replica index");
+    }
+
+    AddReplicaRequest addReplicaRequest =
+        AddReplicaRequest.newBuilder()
+            .setMagicNumber(BINARY_MAGIC)
+            .setIndexName(indexName)
+            .setIndexId(indexStateManager.getIndexId())
+            .setNodeName(getGlobalState().getNodeName())
+            .setHostName("localhost")
+            .setPort(getGlobalState().getReplicationPort())
+            .build();
+
+    long start = System.currentTimeMillis();
+    while ((System.currentTimeMillis() - start) < timeoutMs) {
+      try {
+        AddReplicaResponse response =
+            shardState
+                .nrtReplicaNode
+                .getPrimaryAddress()
+                .getBlockingStub()
+                .addReplicas(addReplicaRequest);
+        if (response.getOk().equals("ok")) {
+          return;
+        }
+      } catch (StatusRuntimeException ignored) {
+      }
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+      }
+    }
+    throw new RuntimeException("Timed out trying to register with primary");
   }
 
   public static Builder builder(TemporaryFolder folder) {
@@ -500,20 +596,21 @@ public class TestServer {
     private String serviceName = SERVICE_NAME;
 
     private boolean autoStart = false;
+    private boolean decInitialCommit = false;
     private Mode mode = Mode.STANDALONE;
     private int port = 0;
     private IndexDataLocationType locationType = IndexDataLocationType.LOCAL;
+    private boolean fileDiscovery = false;
 
     private StateBackendType stateBackendType = StateBackendType.LOCAL;
     private boolean backendReadOnly = true;
-
-    private boolean incArchiver = true;
 
     private boolean syncInitialNrtPoint = true;
 
     private int maxWarmingQueries = 0;
     private int warmingParallelism = 1;
     private boolean warmOnStartup = false;
+    private boolean writeDiscoveryFile = false;
 
     private String additionalConfig = "";
 
@@ -532,6 +629,7 @@ public class TestServer {
       this.mode = mode;
       this.port = port;
       this.locationType = locationType;
+      this.fileDiscovery = mode == Mode.REPLICA && port <= 0;
       return this;
     }
 
@@ -552,8 +650,8 @@ public class TestServer {
       return this;
     }
 
-    public Builder withIncArchiver(boolean enabled) {
-      this.incArchiver = enabled;
+    public Builder withDecInitialCommit(boolean enabled) {
+      this.decInitialCommit = enabled;
       return this;
     }
 
@@ -570,6 +668,11 @@ public class TestServer {
       return this;
     }
 
+    public Builder withWriteDiscoveryFile(boolean writeDiscoveryFile) {
+      this.writeDiscoveryFile = writeDiscoveryFile;
+      return this;
+    }
+
     public TestServer build() throws IOException {
       initS3(folder);
       String configFile =
@@ -578,17 +681,13 @@ public class TestServer {
               baseConfig(),
               backendConfig(),
               autoStartConfig(),
-              archiverConfig(),
               warmingConfig(),
               "syncInitialNrtPoint: " + syncInitialNrtPoint,
               additionalConfig);
       return new TestServer(
-          new LuceneServerConfiguration(new ByteArrayInputStream(configFile.getBytes())));
-    }
-
-    private String archiverConfig() {
-      return String.join(
-          "\n", "backupWithIncArchiver: " + incArchiver, "restoreFromIncArchiver: " + incArchiver);
+          new NrtsearchConfig(new ByteArrayInputStream(configFile.getBytes())),
+          writeDiscoveryFile,
+          Paths.get(folder.getRoot().toString(), DISCOVERY_FILE));
     }
 
     private String backendConfig() {
@@ -605,15 +704,20 @@ public class TestServer {
     }
 
     private String autoStartConfig() {
-      return String.join(
-          "\n",
-          "indexStartConfig:",
-          "  autoStart: " + autoStart,
-          "  dataLocationType: " + locationType,
-          "  mode: " + mode,
-          "  primaryDiscovery:",
-          "    host: localhost",
-          "    port: " + port);
+      String config =
+          String.join(
+              "\n",
+              "indexStartConfig:",
+              "  autoStart: " + autoStart,
+              "  dataLocationType: " + locationType,
+              "  mode: " + mode,
+              "  primaryDiscovery:");
+      if (fileDiscovery) {
+        return String.join(
+            "\n", config, "    file: " + Paths.get(folder.getRoot().toString(), DISCOVERY_FILE));
+      } else {
+        return String.join("\n", config, "    host: localhost", "    port: " + port);
+      }
     }
 
     private String warmingConfig() {
@@ -630,9 +734,10 @@ public class TestServer {
           "\n",
           "nodeName: test_node-" + uuid,
           "serviceName: " + serviceName,
+          "bucketName: " + TEST_BUCKET,
           "stateDir: " + Paths.get(folder.getRoot().toString(), "state_dir"),
           "indexDir: " + Paths.get(folder.getRoot().toString(), "index_dir-" + uuid),
-          "archiveDirectory: " + Paths.get(folder.getRoot().toString(), "archive_dir-" + uuid),
+          "decInitialCommit: " + decInitialCommit,
           "syncInitialNrtPoint: true");
     }
   }

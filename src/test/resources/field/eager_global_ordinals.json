@@ -4,15 +4,13 @@
     {
       "name": "atom_field",
       "type": "ATOM",
-      "storeDocValues": true,
-      "group": true
+      "storeDocValues": true
     },
     {
       "name": "eager_atom_field",
       "type": "ATOM",
       "storeDocValues": true,
-      "eagerFieldGlobalOrdinals": true,
-      "group": true
+      "eagerFieldGlobalOrdinals": true
     },
     {
       "name": "atom_field_multi",
@@ -30,15 +28,13 @@
     {
       "name": "text_field",
       "type": "TEXT",
-      "storeDocValues": true,
-      "group": true
+      "storeDocValues": true
     },
     {
       "name": "eager_text_field",
       "type": "TEXT",
       "storeDocValues": true,
-      "eagerFieldGlobalOrdinals": true,
-      "group": true
+      "eagerFieldGlobalOrdinals": true
     },
     {
       "name": "text_field_multi",

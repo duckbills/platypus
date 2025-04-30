@@ -10,7 +10,7 @@ Changes to these settings can be made any time after the index is created. There
 
 * Directly use the `liveSetting/liveSettingV2 <https://github.com/Yelp/nrtsearch/blob/master/clientlib/src/main/proto/yelp/nrtsearch/luceneserver.proto#L35>`_ gRPC server endpoints
 * Use the '/v1/live_settings' or '/v2/live_settings' endpoints with the gRPC gateway
-* Use the lucene-client `liveSettings/liveSettingsV2 <https://github.com/Yelp/nrtsearch/blob/master/src/main/java/com/yelp/nrtsearch/server/cli/LuceneClientCommand.java>`_ commands
+* Use the nrtsearch_client `liveSettings/liveSettingsV2 <https://github.com/Yelp/nrtsearch/blob/main/src/main/java/com/yelp/nrtsearch/tools/cli/NrtsearchClientCommand.java>`_ commands
 
 Properties
 -----------------------------
@@ -133,3 +133,29 @@ Specifies the default number of documents to collect before terminating the sear
 Must be >= 0
 
 Default: 0
+
+maxMergePreCopyDurationSec
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Specifies the maximum time to wait for replicas to precopy merged segment files. If this time is exceeded the merge will continue without finishing the precopy. If set to 0 there would not be any time limit for precopy.
+
+Must be >= 0
+
+Default: 0
+
+parallelFetchByField
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When using parallelism to fetch field values, this setting determines if the work should be divided by fields or by documents.
+
+Default: false (divide by documents)
+
+
+parallelFetchChunkSize
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When using parallelism to fetch field values, this setting determines the maximum number of fields/documents to process in a single task.
+
+Must be > 0
+
+Default: 50

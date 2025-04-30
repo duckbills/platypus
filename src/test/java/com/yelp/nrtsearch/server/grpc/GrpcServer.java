@@ -17,13 +17,13 @@ package com.yelp.nrtsearch.server.grpc;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.JsonFormat;
-import com.yelp.nrtsearch.server.backup.Archiver;
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
-import com.yelp.nrtsearch.server.luceneserver.GlobalState;
-import com.yelp.nrtsearch.server.luceneserver.RestoreStateHandler;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
+import com.yelp.nrtsearch.server.grpc.NrtsearchServer.LuceneServerImpl;
 import com.yelp.nrtsearch.server.monitoring.Configuration;
-import com.yelp.nrtsearch.server.monitoring.LuceneServerMonitoringServerInterceptor;
+import com.yelp.nrtsearch.server.monitoring.NrtsearchMonitoringServerInterceptor;
 import com.yelp.nrtsearch.server.plugins.Plugin;
+import com.yelp.nrtsearch.server.remote.RemoteBackend;
+import com.yelp.nrtsearch.server.state.GlobalState;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Server;
@@ -32,7 +32,7 @@ import io.grpc.ServerInterceptors;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.testing.GrpcCleanupRule;
-import io.prometheus.client.CollectorRegistry;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.DirectoryStream;
@@ -50,12 +50,12 @@ import org.junit.rules.TemporaryFolder;
 
 public class GrpcServer {
   // TODO: use this everywhere instead of importing test index name from
-  // ReplicationTestFailureScenarios
+  // ReplicationFailureScenariosTest
   public static final String TEST_INDEX = "test_index";
 
   private final GrpcCleanupRule grpcCleanup;
   private final TemporaryFolder temporaryFolder;
-  private final Archiver archiver;
+  private final RemoteBackend remoteBackend;
   private String indexDir;
   private String testIndex;
   private LuceneServerGrpc.LuceneServerBlockingStub blockingStub;
@@ -64,66 +64,62 @@ public class GrpcServer {
   private ReplicationServerGrpc.ReplicationServerStub replicationServerStub;
 
   private GlobalState globalState;
-  private LuceneServerConfiguration configuration;
-  private Server luceneServer;
+  private NrtsearchConfig configuration;
+  private Server server;
   private ManagedChannel luceneServerManagedChannel;
   private Server replicationServer;
   private ManagedChannel replicationServerManagedChannel;
 
   public GrpcServer(
-      CollectorRegistry collectorRegistry,
+      PrometheusRegistry prometheusRegistry,
       GrpcCleanupRule grpcCleanup,
-      LuceneServerConfiguration configuration,
+      NrtsearchConfig configuration,
       TemporaryFolder temporaryFolder,
-      boolean isReplication,
-      GlobalState globalState,
+      GlobalState replicationGlobalState,
       String indexDir,
       String index,
       int port,
-      Archiver archiver,
+      RemoteBackend remoteBackend,
       List<Plugin> plugins)
       throws IOException {
     this.grpcCleanup = grpcCleanup;
     this.temporaryFolder = temporaryFolder;
     this.configuration = configuration;
-    this.globalState = globalState;
+    this.globalState = replicationGlobalState;
     this.indexDir = indexDir;
     this.testIndex = index;
-    this.archiver = archiver;
-    invoke(collectorRegistry, isReplication, port, archiver, plugins);
+    this.remoteBackend = remoteBackend;
+    invoke(prometheusRegistry, replicationGlobalState != null, port, remoteBackend, plugins);
   }
 
   public GrpcServer(
       GrpcCleanupRule grpcCleanup,
-      LuceneServerConfiguration configuration,
+      NrtsearchConfig configuration,
       TemporaryFolder temporaryFolder,
-      boolean isReplication,
-      GlobalState globalState,
+      GlobalState replicationGlobalState,
       String indexDir,
       String index,
       int port,
-      Archiver archiver)
+      RemoteBackend remoteBackend)
       throws IOException {
     this(
         null,
         grpcCleanup,
         configuration,
         temporaryFolder,
-        isReplication,
-        globalState,
+        replicationGlobalState,
         indexDir,
         index,
         port,
-        archiver,
+        remoteBackend,
         Collections.emptyList());
   }
 
   public GrpcServer(
       GrpcCleanupRule grpcCleanup,
-      LuceneServerConfiguration configuration,
+      NrtsearchConfig configuration,
       TemporaryFolder temporaryFolder,
-      boolean isReplication,
-      GlobalState globalState,
+      GlobalState replicationGlobalState,
       String indexDir,
       String index,
       int port)
@@ -132,8 +128,7 @@ public class GrpcServer {
         grpcCleanup,
         configuration,
         temporaryFolder,
-        isReplication,
-        globalState,
+        replicationGlobalState,
         indexDir,
         index,
         port,
@@ -168,15 +163,15 @@ public class GrpcServer {
     return globalState;
   }
 
-  private Archiver getArchiver() {
-    return archiver;
+  private RemoteBackend getRemoteBackend() {
+    return remoteBackend;
   }
 
   public void shutdown() {
-    if (luceneServer != null && luceneServerManagedChannel != null) {
-      luceneServer.shutdown();
+    if (server != null && luceneServerManagedChannel != null) {
+      server.shutdown();
       luceneServerManagedChannel.shutdown();
-      luceneServer = null;
+      server = null;
       luceneServerManagedChannel = null;
     }
     if (replicationServer != null && replicationServerManagedChannel != null) {
@@ -188,10 +183,10 @@ public class GrpcServer {
   }
 
   public void forceShutdown() {
-    if (luceneServer != null && luceneServerManagedChannel != null) {
-      luceneServer.shutdownNow();
+    if (server != null && luceneServerManagedChannel != null) {
+      server.shutdownNow();
       luceneServerManagedChannel.shutdownNow();
-      luceneServer = null;
+      server = null;
       luceneServerManagedChannel = null;
     }
     if (replicationServer != null && replicationServerManagedChannel != null) {
@@ -207,44 +202,41 @@ public class GrpcServer {
    * behaviors or state changes from the client side.
    */
   private void invoke(
-      CollectorRegistry collectorRegistry,
+      PrometheusRegistry prometheusRegistry,
       boolean isReplication,
       int port,
-      Archiver archiver,
+      RemoteBackend remoteBackend,
       List<Plugin> plugins)
       throws IOException {
     // Generate a unique in-process server name.
     String serverName = InProcessServerBuilder.generateName();
     if (!isReplication) {
       Server server;
-      if (collectorRegistry == null) {
+      if (prometheusRegistry == null) {
+        LuceneServerImpl serverImpl =
+            new NrtsearchServer.LuceneServerImpl(
+                configuration, remoteBackend, prometheusRegistry, plugins);
+        globalState = serverImpl.getGlobalState();
         // Create a server, add service, start, and register for automatic graceful shutdown.
         server =
             ServerBuilder.forPort(port)
-                .addService(
-                    new LuceneServer.LuceneServerImpl(
-                            globalState, configuration, archiver, null, collectorRegistry, plugins)
-                        .bindService())
+                .addService(serverImpl.bindService())
                 .compressorRegistry(LuceneServerStubBuilder.COMPRESSOR_REGISTRY)
                 .decompressorRegistry(LuceneServerStubBuilder.DECOMPRESSOR_REGISTRY)
                 .build()
                 .start();
       } else {
-        String serviceName = configuration.getServiceName();
-        String nodeName = configuration.getNodeName();
-        LuceneServerMonitoringServerInterceptor monitoringInterceptor =
-            LuceneServerMonitoringServerInterceptor.create(
-                Configuration.allMetrics().withCollectorRegistry(collectorRegistry),
-                serviceName,
-                nodeName);
+        NrtsearchMonitoringServerInterceptor monitoringInterceptor =
+            NrtsearchMonitoringServerInterceptor.create(
+                Configuration.allMetrics().withPrometheusRegistry(prometheusRegistry));
+        LuceneServerImpl serverImpl =
+            new NrtsearchServer.LuceneServerImpl(
+                configuration, remoteBackend, prometheusRegistry, plugins);
+        globalState = serverImpl.getGlobalState();
         // Create a server, add service, start, and register for automatic graceful shutdown.
         server =
             ServerBuilder.forPort(port)
-                .addService(
-                    ServerInterceptors.intercept(
-                        new LuceneServer.LuceneServerImpl(
-                            globalState, configuration, archiver, null, collectorRegistry, plugins),
-                        monitoringInterceptor))
+                .addService(ServerInterceptors.intercept(serverImpl, monitoringInterceptor))
                 .compressorRegistry(LuceneServerStubBuilder.COMPRESSOR_REGISTRY)
                 .decompressorRegistry(LuceneServerStubBuilder.DECOMPRESSOR_REGISTRY)
                 .build()
@@ -255,7 +247,7 @@ public class GrpcServer {
       // Create a client channel and register for automatic graceful shutdown.
       LuceneServerStubBuilder stubBuilder = new LuceneServerStubBuilder("localhost", port);
       grpcCleanup.register(stubBuilder.channel);
-      luceneServer = server;
+      this.server = server;
       luceneServerManagedChannel = stubBuilder.channel;
       blockingStub = stubBuilder.createBlockingStub();
       stub = stubBuilder.createAsyncStub();
@@ -269,7 +261,7 @@ public class GrpcServer {
       // Create a server, add service, start, and register for automatic graceful shutdown.
       Server server =
           ServerBuilder.forPort(port)
-              .addService(new LuceneServer.ReplicationServerImpl(globalState))
+              .addService(new NrtsearchServer.ReplicationServerImpl(globalState, false))
               .compressorRegistry(LuceneServerStubBuilder.COMPRESSOR_REGISTRY)
               .decompressorRegistry(LuceneServerStubBuilder.DECOMPRESSOR_REGISTRY)
               .build()
@@ -287,7 +279,7 @@ public class GrpcServer {
 
       blockingStub = null;
       stub = null;
-      luceneServer = null;
+      this.server = null;
       luceneServerManagedChannel = null;
     }
   }
@@ -408,8 +400,10 @@ public class GrpcServer {
       String addDocsFile = fileName == null ? "addDocs.csv" : fileName;
       Path filePath = Paths.get("src", "test", "resources", addDocsFile);
       Reader reader = Files.newBufferedReader(filePath);
-      CSVParser csvParser = new CSVParser(reader, CSVFormat.DEFAULT.withFirstRecordAsHeader());
-      return new LuceneServerClientBuilder.AddDocumentsClientBuilder(
+      CSVParser csvParser =
+          new CSVParser(
+              reader, CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build());
+      return new NrtsearchClientBuilder.AddDocumentsClientBuilder(
               grpcServer.getTestIndex(), csvParser)
           .buildRequest(filePath);
     }
@@ -459,27 +453,22 @@ public class GrpcServer {
         startIndexBuilder.setPort(9001); // primary port for replication server
       }
       if (startOldIndex) {
+        blockingStub.createIndex(CreateIndexRequest.newBuilder().setIndexName(testIndex).build());
         RestoreIndex restoreIndex =
             RestoreIndex.newBuilder()
                 .setServiceName("testservice")
                 .setResourceName("testresource")
                 .build();
         startIndexBuilder.setRestore(restoreIndex);
-        RestoreStateHandler.restore(
-            grpcServer.getArchiver(), null, grpcServer.getGlobalState(), "testservice", false);
       }
       blockingStub.startIndex(startIndexBuilder.build());
 
-      if (!startOldIndex) {
-        String registerFields =
-            registerFieldsFileName == null ? "registerFieldsBasic.json" : registerFieldsFileName;
-        // register the fields
-        FieldDefRequest fieldDefRequest =
-            buildFieldDefRequest(Paths.get("src", "test", "resources", registerFields));
-        return blockingStub.registerFields(fieldDefRequest);
-      } else { // dummy
-        return FieldDefResponse.newBuilder().build();
-      }
+      String registerFields =
+          registerFieldsFileName == null ? "registerFieldsBasic.json" : registerFieldsFileName;
+      // register the fields
+      FieldDefRequest fieldDefRequest =
+          buildFieldDefRequest(Paths.get("src", "test", "resources", registerFields));
+      return blockingStub.registerFields(fieldDefRequest);
     }
 
     private FieldDefRequest buildFieldDefRequest(Path filePath) throws IOException {

@@ -18,18 +18,18 @@ package com.yelp.nrtsearch.server.grpc;
 import static com.yelp.nrtsearch.server.grpc.GrpcServer.rmDir;
 import static org.junit.Assert.assertEquals;
 
-import com.yelp.nrtsearch.server.LuceneServerTestConfigurationFactory;
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
-import com.yelp.nrtsearch.server.luceneserver.GlobalState;
-import com.yelp.nrtsearch.server.luceneserver.doc.LoadedDocValues;
-import com.yelp.nrtsearch.server.luceneserver.field.FieldDef;
-import com.yelp.nrtsearch.server.luceneserver.field.FieldDefProvider;
-import com.yelp.nrtsearch.server.luceneserver.field.IndexableFieldDef;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
+import com.yelp.nrtsearch.server.doc.LoadedDocValues;
+import com.yelp.nrtsearch.server.field.FieldDef;
+import com.yelp.nrtsearch.server.field.FieldDefCreator;
+import com.yelp.nrtsearch.server.field.FieldDefProvider;
+import com.yelp.nrtsearch.server.field.IndexableFieldDef;
 import com.yelp.nrtsearch.server.plugins.FieldTypePlugin;
 import com.yelp.nrtsearch.server.plugins.Plugin;
+import com.yelp.nrtsearch.server.utils.NrtsearchTestConfigurationFactory;
 import io.grpc.StatusRuntimeException;
 import io.grpc.testing.GrpcCleanupRule;
-import io.prometheus.client.CollectorRegistry;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.Collections;
@@ -54,13 +54,14 @@ public class CustomFieldTypeTest {
    * end of test.
    */
   @Rule public final GrpcCleanupRule grpcCleanup = new GrpcCleanupRule();
+
   /**
    * This rule ensure the temporary folder which maintains indexes are cleaned up after each test
    */
   @Rule public final TemporaryFolder folder = new TemporaryFolder();
 
   private GrpcServer grpcServer;
-  private CollectorRegistry collectorRegistry;
+  private PrometheusRegistry prometheusRegistry;
 
   @After
   public void tearDown() throws IOException {
@@ -75,33 +76,32 @@ public class CustomFieldTypeTest {
 
   @Before
   public void setUp() throws IOException {
-    collectorRegistry = new CollectorRegistry();
-    grpcServer = setUpGrpcServer(collectorRegistry);
+    prometheusRegistry = new PrometheusRegistry();
+    grpcServer = setUpGrpcServer(prometheusRegistry);
   }
 
-  private GrpcServer setUpGrpcServer(CollectorRegistry collectorRegistry) throws IOException {
+  private GrpcServer setUpGrpcServer(PrometheusRegistry prometheusRegistry) throws IOException {
     String testIndex = "test_index";
-    LuceneServerConfiguration luceneServerConfiguration =
-        LuceneServerTestConfigurationFactory.getConfig(Mode.STANDALONE, folder.getRoot());
-    GlobalState globalState = GlobalState.createState(luceneServerConfiguration);
+    NrtsearchConfig configuration =
+        NrtsearchTestConfigurationFactory.getConfig(Mode.STANDALONE, folder.getRoot());
     return new GrpcServer(
-        collectorRegistry,
+        prometheusRegistry,
         grpcCleanup,
-        luceneServerConfiguration,
+        configuration,
         folder,
-        false,
-        globalState,
-        luceneServerConfiguration.getIndexDir(),
+        null,
+        configuration.getIndexDir(),
         testIndex,
-        globalState.getPort(),
+        configuration.getPort(),
         null,
         Collections.singletonList(new TestFieldTypePlugin()));
   }
 
-  static class TestFieldDef extends IndexableFieldDef {
+  static class TestFieldDef extends IndexableFieldDef<Integer> {
 
-    public TestFieldDef(String name, Field requestField) {
-      super(name, requestField);
+    public TestFieldDef(
+        String name, Field requestField, FieldDefCreator.FieldDefCreatorContext context) {
+      super(name, requestField, context, Integer.class);
     }
 
     @Override
@@ -110,7 +110,7 @@ public class CustomFieldTypeTest {
     }
 
     @Override
-    public LoadedDocValues<?> getDocValues(LeafReaderContext context) throws IOException {
+    public LoadedDocValues<Integer> getDocValues(LeafReaderContext context) throws IOException {
       NumericDocValues numericDocValues = DocValues.getNumeric(context.reader(), getName());
       return new LoadedDocValues.SingleInteger(numericDocValues);
     }

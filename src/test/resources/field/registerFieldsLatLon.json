@@ -4,6 +4,7 @@
     {
       "name": "doc_id",
       "type": "ATOM",
+      "search": true,
       "storeDocValues": true
     },
     {
@@ -11,7 +12,6 @@
       "type": "LAT_LON",
       "multiValued": true,
       "storeDocValues": true,
-      "sort": true,
       "search": true
     },
     {
@@ -19,7 +19,6 @@
       "type": "LAT_LON",
       "multiValued": true,
       "storeDocValues": true,
-      "sort": true,
       "search": false
     }
   ]

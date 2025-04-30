@@ -5,9 +5,11 @@ plugins {
     id 'idea'
     id 'maven-publish'
     id 'signing'
-    id "com.diffplug.gradle.spotless" version "4.3.0"
+    alias(libs.plugins.spotless)
     id 'java-library'
     id 'jacoco'
+    // Build docs locally by running "site" command
+    alias(libs.plugins.sphinx)
 }
 
 repositories {
@@ -18,11 +20,13 @@ repositories {
     mavenCentral()
 }
 
-sourceCompatibility = 1.14
-targetCompatibility = 1.14
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
 
 allprojects {
-    version = '0.16.0'
+    version = '1.0.0-beta.12'
     group = 'com.yelp.nrtsearch'
 }
 
@@ -31,83 +35,65 @@ def _artifactId = 'server'
 //This is for https://github.com/gradle/gradle/issues/11308
 System.setProperty("org.gradle.internal.publish.checksums.insecure", "True")
 
-def luceneVersion = '8.4.0'
-project.ext.slf4jVersion = '2.0.0-alpha1'
-project.ext.grpcVersion = '1.46.0'
-project.ext.lz4Version = '1.7.0'
-project.ext.mockitoVersion = '2.25.1'
-project.ext.jacksonYamlVersion = '2.13.3'
-def log4jVersion = '2.17.0'
-def disruptorVersion = '3.2.1'
-def gsonVersion = '2.9.0'
-def snakeYamlVersion = '1.25'
-def spatial4jVersion = '0.7'
-def s3mockVersion = '0.2.5'
-def commonsCompressVersion = '1.19'
-def awsJavaSdkVersion = '1.11.695'
-def guicedeeVersion = '1.1.1.3-jre14'
-def prometheusClientVersion = '0.8.0'
-def fastutilVersion = '8.5.6'
-
 dependencies {
 
     //prometheus (metrics) deps
-    implementation "io.prometheus:simpleclient_servlet:${prometheusClientVersion}"
-    implementation "io.prometheus:simpleclient_hotspot:${prometheusClientVersion}"
-    implementation "io.grpc:grpc-netty-shaded:${rootProject.grpcVersion}"
+    implementation libs.prometheus.metrics.core
+    implementation libs.prometheus.metrics.exposition.formats
+    implementation libs.prometheus.metrics.instrumentation.jvm
 
     //logging deps
-    implementation "org.slf4j:slf4j-api:${project.ext.slf4jVersion}"
-    implementation "org.apache.logging.log4j:log4j-slf4j18-impl:${log4jVersion}"
-    implementation "org.apache.logging.log4j:log4j-api:${log4jVersion}"
-    implementation "org.apache.logging.log4j:log4j-core:${log4jVersion}"
-    implementation "com.lmax:disruptor:${disruptorVersion}"
-
-
-    implementation "com.google.code.gson:gson:${gsonVersion}"
-    implementation 'org.apache.commons:commons-io:1.3.2'
-    implementation "org.yaml:snakeyaml:${snakeYamlVersion}"
-    implementation "org.apache.commons:commons-compress:${commonsCompressVersion}"
-    implementation "com.amazonaws:aws-java-sdk-core:${awsJavaSdkVersion}"
-    implementation "com.amazonaws:aws-java-sdk-s3:${awsJavaSdkVersion}"
-    implementation "javax.xml.bind:jaxb-api:2.3.1"
-    implementation "com.guicedee.services:guice:${guicedeeVersion}"
-    implementation "org.lz4:lz4-java:${project.ext.lz4Version}"
-    implementation "com.fasterxml.jackson.core:jackson-databind:${project.ext.jacksonYamlVersion}"
-    implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:${project.ext.jacksonYamlVersion}"
+    implementation libs.slf4j.api
+    implementation libs.log4j.api
+    implementation libs.log4j.core
+    implementation libs.log4j.slf4j2.impl
+    implementation libs.disruptor
 
     //lucene deps
-    implementation "org.apache.lucene:lucene-core:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-codecs:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-backward-codecs:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-queries:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-facet:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-replicator:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-analyzers-common:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-suggest:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-expressions:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-queries:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-queryparser:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-highlighter:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-grouping:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-queries:${luceneVersion}"
-    implementation "org.apache.lucene:lucene-join:${luceneVersion}"
+    implementation libs.lucene.analysis.common
+    implementation libs.lucene.backward.codecs
+    implementation libs.lucene.core
+    implementation libs.lucene.codecs
+    implementation libs.lucene.expressions
+    implementation libs.lucene.facet
+    implementation libs.lucene.grouping
+    implementation libs.lucene.highlighter
+    implementation libs.lucene.join
+    implementation libs.lucene.queries
+    implementation libs.lucene.queryparser
+    implementation libs.lucene.replicator
+    implementation libs.lucene.suggest
 
     //cli deps
-    implementation 'info.picocli:picocli:4.0.4'
-    implementation 'org.apache.commons:commons-csv:1.7'
+    implementation libs.picocli
+    implementation libs.commons.csv
 
-    // gRPC deps
-    implementation "io.grpc:grpc-services:${project.ext.grpcVersion}"
+    // other deps
+    implementation libs.aws.java.sdk.core
+    implementation libs.aws.java.sdk.s3
+    runtimeOnly libs.aws.java.sdk.sts
+    implementation libs.commons.compress
+    implementation libs.commons.io
+    implementation libs.fastutil
+    implementation libs.grpc.netty.shaded
+    implementation libs.grpc.services
+    implementation libs.gson
+    implementation libs.guice
+    implementation libs.jackson.databind
+    implementation libs.jackson.dataformat.yaml
+    implementation libs.jakarta.xml.bind.api
+    implementation libs.lz4.java
+    implementation libs.snakeyaml
 
-    implementation "it.unimi.dsi:fastutil:${fastutilVersion}"
-
-    testImplementation "junit:junit:4.13"
-    testImplementation "org.mockito:mockito-core:${project.ext.mockitoVersion}"
-    testImplementation "org.apache.lucene:lucene-test-framework:${luceneVersion}"
-    testImplementation "org.locationtech.spatial4j:spatial4j:${spatial4jVersion}"
-    testImplementation "io.findify:s3mock_2.12:${s3mockVersion}"
-    testImplementation "org.assertj:assertj-core:3.19.0"
+    // test deps
+    testImplementation libs.junit
+    testImplementation libs.grpc.inprocess
+    testImplementation libs.grpc.testing
+    testImplementation libs.mockito.core
+    testImplementation libs.lucene.test.framework
+    testImplementation libs.spatial4j
+    testImplementation libs.s3mock
+    testImplementation libs.assertj.core
 
     api project(':clientlib')
 }
@@ -115,39 +101,49 @@ dependencies {
 startScripts.enabled = false
 
 task luceneServer(type: CreateStartScripts) {
-    mainClassName = 'com.yelp.nrtsearch.server.grpc.LuceneServer'
+    mainClass = 'com.yelp.nrtsearch.server.grpc.NrtsearchServer'
     applicationName = 'lucene-server'
-    outputDir = new File(project.buildDir, 'tmp')
+    outputDir = new File(project.buildDir, 'tmp-app')
     classpath = startScripts.classpath
     // Add additional dependencies, e.g. custom loggers
     classpath += files('$APP_HOME/additional_libs')
 }
 
 task luceneServerClient(type: CreateStartScripts) {
-    mainClassName = 'com.yelp.nrtsearch.server.cli.LuceneClientCommand'
+    mainClass = 'com.yelp.nrtsearch.tools.cli.NrtsearchClientCommand'
     applicationName = 'lucene-client'
-    outputDir = new File(project.buildDir, 'tmp')
+    outputDir = new File(project.buildDir, 'tmp-app')
     classpath = startScripts.classpath
 }
 
-task backupRestoreTool(type: CreateStartScripts) {
-    mainClassName = 'com.yelp.nrtsearch.server.cli.BackupRestoreCommand'
-    applicationName = 'backup-restore'
-    outputDir = new File(project.buildDir, 'tmp')
+task nrtsearchServer(type: CreateStartScripts) {
+    mainClass = 'com.yelp.nrtsearch.server.grpc.NrtsearchServer'
+    applicationName = 'nrtsearch_server'
+    outputDir = new File(project.buildDir, 'tmp-app')
+    classpath = startScripts.classpath
+    // Add additional dependencies, e.g. custom loggers
+    classpath += files('$APP_HOME/additional_libs')
+}
+
+task nrtsearchServerClient(type: CreateStartScripts) {
+    mainClass = 'com.yelp.nrtsearch.tools.cli.NrtsearchClientCommand'
+    applicationName = 'nrtsearch_client'
+    outputDir = new File(project.buildDir, 'tmp-app')
     classpath = startScripts.classpath
 }
 
 task nrtUtils(type: CreateStartScripts) {
-    mainClassName = 'com.yelp.nrtsearch.tools.nrt_utils.NrtUtilsCommand'
+    mainClass = 'com.yelp.nrtsearch.tools.nrt_utils.NrtUtilsCommand'
     applicationName = 'nrt_utils'
-    outputDir = new File(project.buildDir, 'tmp')
+    outputDir = new File(project.buildDir, 'tmp-app')
     classpath = startScripts.classpath
 }
 
 applicationDistribution.into('bin') {
     from(luceneServer)
     from(luceneServerClient)
-    from(backupRestoreTool)
+    from(nrtsearchServer)
+    from(nrtsearchServerClient)
     from(nrtUtils)
     fileMode = 0755
 }
@@ -163,14 +159,17 @@ task buildGrpcGateway(dependsOn: installDist, type: Exec) {
 //e.g. default is to exclude perfTests: ./gradlew test
 test {
     finalizedBy 'spotlessJavaCheck'
+    // Used by NrtsearchConfigTest
+    environment(Map.of('CUSTOM_HOST', 'my_custom_host', 'VAR1', 'v1', 'VAR2', 'v2', 'VAR3', 'v3'))
     if (project.hasProperty('longRunningTestsOnly')) {
         include '**/IncrementalDataCleanupCommandTest.class'
+        include '**/CleanupDataCommandTest.class'
     } else {
         if (!project.hasProperty('includePerfTests')) {
             exclude '**/YelpReviewsTest.class'
-            exclude '**/YelpSuggestTest.class'
             exclude '**/MergeBehaviorTests.class'
             exclude '**/IncrementalDataCleanupCommandTest.class'
+            exclude '**/CleanupDataCommandTest.class'
             filter {
                 excludeTestsMatching '*.NodeNameResolverAndLoadBalancingTests.testSimpleLoadBalancingAsync'
             }
@@ -187,7 +186,7 @@ test {
 
 jacocoTestReport {
     reports {
-        csv.enabled true
+        csv.required = true
     }
 }
 
@@ -196,17 +195,17 @@ task javadocs(type: Javadoc) {
 }
 
 task javadocsJar(type: Jar) {
-    classifier('javadoc')
+    archiveClassifier = 'javadoc'
     from javadocs.destinationDir
 }
 
 task sourcesJar(type: Jar) {
-    classifier('sources')
+    archiveClassifier = 'sources'
     from sourceSets.main.java.srcDirs
 }
 
 task testsJar(type: Jar) {
-    classifier('tests')
+    archiveClassifier = 'tests'
     from sourceSets.test.output
 }
 
@@ -228,7 +227,7 @@ publishing {
             artifact tasks.testsJar
             pom {
                 name = 'nrtSearch Server'
-                description = 'GRPC lucene server using near-real-time replication'
+                description = 'GRPC server using near-real-time replication'
                 url = 'https://github.com/Yelp/nrtsearch'
                 licenses {
                     license {
@@ -308,6 +307,13 @@ spotless {
         trimTrailingWhitespace()
         googleJavaFormat()
     }
+}
+
+sphinx {
+    sourceDirectory = "${projectDir}/docs"
+    outputDirectory = "${project.buildDir}/docs"
+    // Remove if not using OS X. This is required on non-Intel macs since aarch-64 build is not available.
+    binaryUrl       = 'https://github.com/trustin/sphinx-binary/releases/download/v0.8.2/sphinx.osx-x86_64'
 }
 
 // Inject properties file containing the project version into resources.

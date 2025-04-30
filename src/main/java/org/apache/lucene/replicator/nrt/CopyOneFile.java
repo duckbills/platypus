@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.Locale;
+import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexOutput;
 
@@ -53,7 +54,7 @@ public class CopyOneFile implements Closeable {
     out = dest.createTempOutput(name, "copy", IOContext.DEFAULT);
     tmpName = out.getName();
     // last 8 bytes are checksum:
-    bytesToCopy = metaData.length - Long.BYTES;
+    bytesToCopy = metaData.length() - Long.BYTES;
     if (Node.VERBOSE_FILES) {
       dest.message(
           "file "
@@ -122,7 +123,7 @@ public class CopyOneFile implements Closeable {
       return false;
     } else {
       long checksum = out.getChecksum();
-      if (checksum != metaData.checksum) {
+      if (checksum != metaData.checksum()) {
         // Bits flipped during copy!
         dest.message(
             "file "
@@ -130,7 +131,7 @@ public class CopyOneFile implements Closeable {
                 + ": checksum mismatch after copy (bits flipped during network copy?) after-copy checksum="
                 + checksum
                 + " vs expected="
-                + metaData.checksum
+                + metaData.checksum()
                 + "; cancel job");
         throw new IOException("file " + name + ": checksum mismatch after file copy");
       }
@@ -148,7 +149,7 @@ public class CopyOneFile implements Closeable {
                 + actualChecksumIn);
         throw new IOException("file " + name + ": checksum mismatch after file copy");
       }
-      out.writeLong(checksum);
+      CodecUtil.writeBELong(out, checksum);
       close();
       if (Node.VERBOSE_FILES) {
         dest.message(
@@ -156,7 +157,7 @@ public class CopyOneFile implements Closeable {
                 Locale.ROOT,
                 "file %s: done copying [%s, %.3fms]",
                 name,
-                Node.bytesToString(metaData.length),
+                Node.bytesToString(metaData.length()),
                 (System.nanoTime() - copyStartNS) / 1000000.0));
       }
       return true;

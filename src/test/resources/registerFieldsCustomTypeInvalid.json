@@ -4,21 +4,20 @@
     {
       "name": "doc_id",
       "type": "ATOM",
+      "search": true,
       "storeDocValues": true
     },
     {
       "name": "int_field",
       "type": "INT",
       "search": true,
-      "storeDocValues": true,
-      "sort": true
+      "storeDocValues": true
     },
     {
       "name": "custom_field",
       "type": "CUSTOM",
       "search": true,
-      "storeDocValues": true,
-      "sort": true
+      "storeDocValues": true
     }
   ]
 }

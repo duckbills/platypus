@@ -20,15 +20,15 @@ import static org.junit.Assert.assertTrue;
 
 import com.google.protobuf.Any;
 import com.google.protobuf.InvalidProtocolBufferException;
-import com.yelp.nrtsearch.server.LuceneServerTestConfigurationFactory;
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
-import com.yelp.nrtsearch.server.luceneserver.GlobalState;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
+import com.yelp.nrtsearch.server.utils.NrtsearchTestConfigurationFactory;
 import io.grpc.testing.GrpcCleanupRule;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import org.junit.After;
 import org.junit.Before;
@@ -43,6 +43,7 @@ public class QueryTest {
    * end of test.
    */
   @Rule public final GrpcCleanupRule grpcCleanup = new GrpcCleanupRule();
+
   /**
    * This rule ensure the temporary folder which maintains indexes are cleaned up after each test
    */
@@ -76,18 +77,16 @@ public class QueryTest {
 
   private GrpcServer setUpGrpcServer() throws IOException {
     String testIndex = "test_index";
-    LuceneServerConfiguration luceneServerConfiguration =
-        LuceneServerTestConfigurationFactory.getConfig(Mode.STANDALONE, folder.getRoot());
-    GlobalState globalState = GlobalState.createState(luceneServerConfiguration);
+    NrtsearchConfig configuration =
+        NrtsearchTestConfigurationFactory.getConfig(Mode.STANDALONE, folder.getRoot());
     return new GrpcServer(
         grpcCleanup,
-        luceneServerConfiguration,
+        configuration,
         folder,
-        false,
-        globalState,
-        luceneServerConfiguration.getIndexDir(),
+        null,
+        configuration.getIndexDir(),
         testIndex,
-        globalState.getPort());
+        configuration.getPort());
   }
 
   @Test
@@ -100,7 +99,7 @@ public class QueryTest {
                     .setIndexName(grpcServer.getTestIndex())
                     .setStartHit(0)
                     .setTopHits(10)
-                    .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
+                    .addAllRetrieveFields(NrtsearchServerTest.RETRIEVED_VALUES)
                     .setQueryText("SECOND")
                     .build());
 
@@ -109,7 +108,7 @@ public class QueryTest {
     SearchResponse.Hit hit = searchResponse.getHits(0);
     String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
     assertEquals("2", docId);
-    LuceneServerTest.checkHits(hit);
+    NrtsearchServerTest.checkHits(hit);
   }
 
   @Test
@@ -122,7 +121,7 @@ public class QueryTest {
                     .setIndexName(grpcServer.getTestIndex())
                     .setStartHit(0)
                     .setTopHits(10)
-                    .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
+                    .addAllRetrieveFields(NrtsearchServerTest.RETRIEVED_VALUES)
                     .setQueryText("SECOND")
                     .build());
     assertTrue(anyResponse.is(SearchResponse.class));
@@ -132,7 +131,7 @@ public class QueryTest {
     SearchResponse.Hit hit = searchResponse.getHits(0);
     String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
     assertEquals("2", docId);
-    LuceneServerTest.checkHits(hit);
+    NrtsearchServerTest.checkHits(hit);
   }
 
   @Test
@@ -148,7 +147,7 @@ public class QueryTest {
                       .setIndexName(grpcServer.getTestIndex())
                       .setStartHit(0)
                       .setTopHits(10)
-                      .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
+                      .addAllRetrieveFields(NrtsearchServerTest.RETRIEVED_VALUES)
                       .setQueryText("SECOND")
                       .setResponseCompression(compressionType)
                       .build());
@@ -158,7 +157,7 @@ public class QueryTest {
       SearchResponse.Hit hit = searchResponse.getHits(0);
       String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
       assertEquals("2", docId);
-      LuceneServerTest.checkHits(hit);
+      NrtsearchServerTest.checkHits(hit);
     }
   }
 
@@ -175,7 +174,7 @@ public class QueryTest {
                       .setIndexName(grpcServer.getTestIndex())
                       .setStartHit(0)
                       .setTopHits(10)
-                      .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
+                      .addAllRetrieveFields(NrtsearchServerTest.RETRIEVED_VALUES)
                       .setQueryText("SECOND")
                       .setResponseCompression(compressionType)
                       .build());
@@ -186,7 +185,7 @@ public class QueryTest {
       SearchResponse.Hit hit = searchResponse.getHits(0);
       String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
       assertEquals("2", docId);
-      LuceneServerTest.checkHits(hit);
+      NrtsearchServerTest.checkHits(hit);
     }
   }
 
@@ -220,7 +219,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("1", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -256,7 +255,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -282,7 +281,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -316,7 +315,7 @@ public class QueryTest {
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
           assertEquals(14.0, hit.getScore(), 0.0);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -342,14 +341,14 @@ public class QueryTest {
           String firstDocId = firstHit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", firstDocId);
           assertEquals(14.0, firstHit.getScore(), 0.0);
-          LuceneServerTest.checkHits(firstHit);
+          NrtsearchServerTest.checkHits(firstHit);
 
           SearchResponse.Hit secondHit = searchResponse.getHits(1);
           String secondDocId =
               secondHit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("1", secondDocId);
           assertEquals(6.0, secondHit.getScore(), 0.0);
-          LuceneServerTest.checkHits(secondHit);
+          NrtsearchServerTest.checkHits(secondHit);
         };
 
     testQuery(query, responseTester);
@@ -371,7 +370,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -437,7 +436,7 @@ public class QueryTest {
           // score should be equal 1.0 * firstPassScore + 4.0 * secondPassScore = 45
           // the scores are hardcoded in query. firstPass: 5, secondsPass: 10
           assertEquals(45, hit.getScore(), 0);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQueryWithRescorers(firstPassQuery, List.of(queryRescorer), responseTester);
@@ -481,7 +480,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     for (TermQuery termQuery :
@@ -527,9 +526,9 @@ public class QueryTest {
           assertEquals(2, searchResponse.getTotalHits().getValue());
           assertEquals(2, searchResponse.getHitsList().size());
           SearchResponse.Hit firstHit = searchResponse.getHits(0);
-          LuceneServerTest.checkHits(firstHit);
+          NrtsearchServerTest.checkHits(firstHit);
           SearchResponse.Hit secondHit = searchResponse.getHits(1);
-          LuceneServerTest.checkHits(secondHit);
+          NrtsearchServerTest.checkHits(secondHit);
         };
 
     for (TermInSetQuery termInSetQuery :
@@ -577,7 +576,7 @@ public class QueryTest {
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
           assertEquals(14.0, hit.getScore(), 0.0);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -601,7 +600,60 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
+        };
+
+    testQuery(query, responseTester);
+  }
+
+  @Test
+  public void testSearchMatchQueryWithFuzzyParamsMaxEdits() {
+    Query query =
+        Query.newBuilder()
+            .setMatchQuery(
+                MatchQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("SECODD")
+                    .setFuzzyParams(FuzzyParams.newBuilder().setMaxEdits(1).setMaxExpansions(100))
+                    .setOperator(MatchOperator.SHOULD))
+            .build();
+
+    Consumer<SearchResponse> responseTester =
+        searchResponse -> {
+          assertEquals(1, searchResponse.getTotalHits().getValue());
+          assertEquals(1, searchResponse.getHitsList().size());
+          SearchResponse.Hit hit = searchResponse.getHits(0);
+          String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
+          assertEquals("2", docId);
+          NrtsearchServerTest.checkHits(hit);
+        };
+
+    testQuery(query, responseTester);
+  }
+
+  @Test
+  public void testSearchMatchQueryWithFuzzyParamsAuto() {
+    Query query =
+        Query.newBuilder()
+            .setMatchQuery(
+                MatchQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("seccnn") // maxEdits will be 2 for AUTO fuzziness
+                    .setFuzzyParams(
+                        FuzzyParams.newBuilder()
+                            .setAuto(FuzzyParams.AutoFuzziness.newBuilder().build())
+                            .setMaxExpansions(100))
+                    .setOperator(MatchOperator.SHOULD))
+            .build();
+
+    Consumer<SearchResponse> responseTester =
+        searchResponse -> {
+          assertEquals(1, searchResponse.getTotalHits().getValue());
+          assertEquals(1, searchResponse.getHitsList().size());
+          SearchResponse.Hit hit = searchResponse.getHits(0);
+          String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
+          assertEquals("2", docId);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -627,7 +679,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -677,7 +729,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -690,7 +742,7 @@ public class QueryTest {
             .setMatchPhraseQuery(
                 MatchPhraseQuery.newBuilder()
                     .setField("vendor_name")
-                    .setQuery("SECOND second")
+                    .setQuery("SECOND again")
                     .setSlop(1))
             .build();
 
@@ -701,7 +753,50 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
+        };
+
+    testQuery(query, responseTester);
+  }
+
+  @Test
+  public void testSearchMatchPhraseQueryPositionIncrementGap() {
+    Query query =
+        Query.newBuilder()
+            .setMatchPhraseQuery(
+                MatchPhraseQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("SECOND second")
+                    // slop less than default position increment gap
+                    .setSlop(1))
+            .build();
+
+    Consumer<SearchResponse> responseTester =
+        searchResponse -> {
+          assertEquals(0, searchResponse.getTotalHits().getValue());
+          assertEquals(0, searchResponse.getHitsList().size());
+        };
+
+    testQuery(query, responseTester);
+
+    query =
+        Query.newBuilder()
+            .setMatchPhraseQuery(
+                MatchPhraseQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("SECOND second")
+                    // slop greater than default position increment gap
+                    .setSlop(101))
+            .build();
+
+    responseTester =
+        searchResponse -> {
+          assertEquals(1, searchResponse.getTotalHits().getValue());
+          assertEquals(1, searchResponse.getHitsList().size());
+          SearchResponse.Hit hit = searchResponse.getHits(0);
+          String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
+          assertEquals("2", docId);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -728,6 +823,48 @@ public class QueryTest {
   }
 
   @Test
+  public void testSearchMatchPhraseQueryZeroTermsIsNone() {
+    Query query =
+        Query.newBuilder()
+            .setMatchPhraseQuery(
+                MatchPhraseQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("/?/ ?//?")
+                    .setSlop(1)
+                    .setZeroTermsQuery(MatchPhraseQuery.ZeroTerms.NONE_ZERO_TERMS))
+            .build();
+
+    Consumer<SearchResponse> responseTester =
+        searchResponse -> {
+          assertEquals(0, searchResponse.getTotalHits().getValue());
+          assertEquals(0, searchResponse.getHitsList().size());
+        };
+
+    testQuery(query, responseTester);
+  }
+
+  @Test
+  public void testSearchMatchPhraseQueryZeroTermsIsAll() {
+    Query query =
+        Query.newBuilder()
+            .setMatchPhraseQuery(
+                MatchPhraseQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("/?/ ?//?")
+                    .setSlop(1)
+                    .setZeroTermsQuery(MatchPhraseQuery.ZeroTerms.ALL_ZERO_TERMS))
+            .build();
+
+    Consumer<SearchResponse> responseTester =
+        searchResponse -> {
+          assertEquals(2, searchResponse.getTotalHits().getValue());
+          assertEquals(2, searchResponse.getHitsList().size());
+        };
+
+    testQuery(query, responseTester);
+  }
+
+  @Test
   public void testSearchMatchPhraseQueryCustomAnalyzer() {
     Query query =
         Query.newBuilder()
@@ -746,7 +883,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -784,7 +921,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     testQuery(query, responseTester);
@@ -827,7 +964,7 @@ public class QueryTest {
           SearchResponse.Hit hit = searchResponse.getHits(0);
           String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
           assertEquals("2", docId);
-          LuceneServerTest.checkHits(hit);
+          NrtsearchServerTest.checkHits(hit);
         };
 
     for (RangeQuery rangeQuery : List.of(intQuery, longQuery, floatQuery, doubleQuery, dateQuery)) {
@@ -835,6 +972,102 @@ public class QueryTest {
 
       testQuery(query, responseTester);
     }
+  }
+
+  @Test
+  public void testSearchExplain() {
+    Query query =
+        Query.newBuilder()
+            .setMatchPhraseQuery(
+                MatchPhraseQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("SECOND again")
+                    .setSlop(1))
+            .build();
+
+    Consumer<SearchResponse> responseTester =
+        searchResponse -> {
+          assertEquals(1, searchResponse.getTotalHits().getValue());
+          assertEquals(1, searchResponse.getHitsList().size());
+          SearchResponse.Hit hit = searchResponse.getHits(0);
+          String docId = hit.getFieldsMap().get("doc_id").getFieldValue(0).getTextValue();
+          assertEquals("2", docId);
+          NrtsearchServerTest.checkHits(hit);
+        };
+    SearchResponse searchResponse = grpcServer.getBlockingStub().search(buildSearchRequest(query));
+    responseTester.accept(searchResponse);
+    boolean explain = true;
+    SearchResponse searchResponseExplained =
+        grpcServer.getBlockingStub().search(buildSearchRequestWithExplain(query, explain));
+    responseTester.accept(searchResponseExplained);
+    String expectedExplain =
+        "0.3979403 = weight(vendor_name:\"second again\"~1 in 1) [], result of:\n"
+            + "  0.3979403 = score(freq=1.0), computed as boost * idf * tf from:\n"
+            + "    0.87546873 = idf, sum of:\n"
+            + "      0.6931472 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n"
+            + "        1 = n, number of documents containing term\n"
+            + "        2 = N, total number of documents with field\n"
+            + "      0.18232156 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n"
+            + "        2 = n, number of documents containing term\n"
+            + "        2 = N, total number of documents with field\n"
+            + "    0.45454544 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n"
+            + "      1.0 = phraseFreq=1.0\n"
+            + "      1.2 = k1, term saturation parameter\n"
+            + "      0.75 = b, length normalization parameter\n"
+            + "      4.0 = dl, length of field\n"
+            + "      4.0 = avgdl, average length of field";
+    for (int i = 0; i < searchResponse.getHitsCount(); i++) {
+      SearchResponse.Hit hit = searchResponse.getHits(i);
+      SearchResponse.Hit explainedHit = searchResponseExplained.getHits(i);
+      SearchResponse.Hit hitWithoutExplain = hit.toBuilder().setExplain("").build();
+      SearchResponse.Hit explainedHitWithoutExplain =
+          explainedHit.toBuilder().setExplain("").build();
+      assertEquals(hitWithoutExplain, explainedHitWithoutExplain);
+      assertEquals(expectedExplain, explainedHit.getExplain().trim());
+    }
+  }
+
+  @Test
+  public void testEmptyBooleanQuery() {
+    Query query = Query.newBuilder().setBooleanQuery(BooleanQuery.newBuilder().build()).build();
+    SearchResponse response = grpcServer.getBlockingStub().search(buildSearchRequest(query));
+    assertEquals(response.getHitsCount(), 2);
+    for (SearchResponse.Hit hit : response.getHitsList()) {
+      assertEquals(1.0, hit.getScore(), 0.0);
+    }
+  }
+
+  @Test
+  public void testInitialDeadlineMs_withDeadline() {
+    Query query =
+        Query.newBuilder()
+            .setMatchPhraseQuery(
+                MatchPhraseQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("SECOND again")
+                    .setSlop(1))
+            .build();
+    long deadlineMs = 30000;
+    SearchResponse searchResponse =
+        grpcServer
+            .getBlockingStub()
+            .withDeadlineAfter(deadlineMs, TimeUnit.MILLISECONDS)
+            .search(buildSearchRequest(query));
+    assertTrue(searchResponse.getDiagnostics().getInitialDeadlineMs() > 0);
+  }
+
+  @Test
+  public void testInitialDeadlineMs_withoutDeadline() {
+    Query query =
+        Query.newBuilder()
+            .setMatchPhraseQuery(
+                MatchPhraseQuery.newBuilder()
+                    .setField("vendor_name")
+                    .setQuery("SECOND again")
+                    .setSlop(1))
+            .build();
+    SearchResponse searchResponse = grpcServer.getBlockingStub().search(buildSearchRequest(query));
+    assertEquals(0, searchResponse.getDiagnostics().getInitialDeadlineMs(), 0);
   }
 
   /**
@@ -873,8 +1106,19 @@ public class QueryTest {
         .setIndexName(grpcServer.getTestIndex())
         .setStartHit(0)
         .setTopHits(10)
-        .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
+        .addAllRetrieveFields(NrtsearchServerTest.RETRIEVED_VALUES)
         .setQuery(query)
+        .build();
+  }
+
+  private SearchRequest buildSearchRequestWithExplain(Query query, boolean explain) {
+    return SearchRequest.newBuilder()
+        .setIndexName(grpcServer.getTestIndex())
+        .setStartHit(0)
+        .setTopHits(10)
+        .addAllRetrieveFields(NrtsearchServerTest.RETRIEVED_VALUES)
+        .setQuery(query)
+        .setExplain(explain)
         .build();
   }
 
@@ -883,7 +1127,7 @@ public class QueryTest {
         .setIndexName(grpcServer.getTestIndex())
         .setStartHit(0)
         .setTopHits(10)
-        .addAllRetrieveFields(LuceneServerTest.RETRIEVED_VALUES)
+        .addAllRetrieveFields(NrtsearchServerTest.RETRIEVED_VALUES)
         .setQuery(query)
         .addAllRescorers(rescorers)
         .build();

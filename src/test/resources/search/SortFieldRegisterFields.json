@@ -4,6 +4,7 @@
     {
       "name": "doc_id",
       "type": "ATOM",
+      "search": true,
       "storeDocValues": true
     },
     {
@@ -13,8 +14,21 @@
       "storeDocValues": true
     },
     {
+      "name": "multi_int_field",
+      "type": "INT",
+      "search": true,
+      "multiValued": true,
+      "storeDocValues": true
+    },
+    {
       "name": "long_field",
       "type": "LONG",
+      "storeDocValues": true
+    },
+    {
+      "name": "multi_long_field",
+      "type": "LONG",
+      "multiValued": true,
       "storeDocValues": true
     },
     {
@@ -23,8 +37,20 @@
       "storeDocValues": true
     },
     {
+      "name": "multi_float_field",
+      "type": "FLOAT",
+      "multiValued": true,
+      "storeDocValues": true
+    },
+    {
       "name": "double_field",
       "type": "DOUBLE",
+      "storeDocValues": true
+    },
+    {
+      "name": "multi_double_field",
+      "type": "DOUBLE",
+      "multiValued": true,
       "storeDocValues": true
     },
     {
@@ -34,6 +60,28 @@
         "lang": "js",
         "source": "float_field*2.0+long_field*3.0"
       }
+    },
+    {
+      "name": "lat_lon_field",
+      "type": "LAT_LON",
+      "multiValued": true,
+      "storeDocValues": true,
+      "search": true
+    },
+    {
+      "name": "nested_object_field",
+      "type": "OBJECT",
+      "nestedDoc": true,
+      "multiValued": true,
+      "childFields": [
+        {
+          "name": "nested_lat_lon_field",
+          "type": "LAT_LON",
+          "multiValued": true,
+          "storeDocValues": true,
+          "search": true
+        }
+      ]
     }
   ]
 }

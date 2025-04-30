@@ -17,10 +17,7 @@ package com.yelp.nrtsearch.tools.nrt_utils.state;
 
 import com.amazonaws.services.s3.AmazonS3;
 import com.google.common.annotations.VisibleForTesting;
-import com.yelp.nrtsearch.server.backup.VersionManager;
-import com.yelp.nrtsearch.server.luceneserver.IndexBackupUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.StateUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.backend.RemoteStateBackend;
+import com.yelp.nrtsearch.server.remote.s3.S3Backend;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
@@ -42,7 +39,7 @@ public class PutRemoteStateCommand implements Callable<Integer> {
       names = {"-r", "--resourceName"},
       description =
           "Resource name, should be index name or \""
-              + RemoteStateBackend.GLOBAL_STATE_RESOURCE
+              + StateCommandUtils.GLOBAL_STATE_RESOURCE
               + "\"",
       required = true)
   private String resourceName;
@@ -60,12 +57,13 @@ public class PutRemoteStateCommand implements Callable<Integer> {
 
   @CommandLine.Option(
       names = {"-c", "--credsFile"},
-      description = "File holding AWS credentials, uses default locations if not set")
+      description =
+          "File holding AWS credentials; Will use DefaultCredentialProvider if this is unset.")
   private String credsFile;
 
   @CommandLine.Option(
       names = {"-p", "--credsProfile"},
-      description = "Profile to use from creds file",
+      description = "Profile to use from creds file; Neglected when credsFile is unset.",
       defaultValue = "default")
   private String credsProfile;
 
@@ -90,6 +88,12 @@ public class PutRemoteStateCommand implements Callable<Integer> {
       description = "If present, writes current state to this file before uploading")
   private String backupFile;
 
+  @CommandLine.Option(
+      names = {"--maxRetry"},
+      description = "Maximum number of retry attempts for S3 failed requests",
+      defaultValue = "20")
+  private int maxRetry;
+
   private AmazonS3 s3Client;
 
   @VisibleForTesting
@@ -100,27 +104,28 @@ public class PutRemoteStateCommand implements Callable<Integer> {
   @Override
   public Integer call() throws Exception {
     if (s3Client == null) {
-      s3Client = StateCommandUtils.createS3Client(bucketName, region, credsFile, credsProfile);
+      s3Client =
+          StateCommandUtils.createS3Client(bucketName, region, credsFile, credsProfile, maxRetry);
     }
-    VersionManager versionManager = new VersionManager(s3Client, bucketName);
+    S3Backend s3Backend = new S3Backend(bucketName, false, s3Client);
 
     String resolvedResourceName =
-        StateCommandUtils.getResourceName(
-            versionManager, serviceName, resourceName, exactResourceName);
-    String stateFileName =
-        IndexBackupUtils.isBackendGlobalState(resolvedResourceName)
-            ? StateUtils.GLOBAL_STATE_FILE
-            : StateUtils.INDEX_STATE_FILE;
+        StateCommandUtils.getResourceName(s3Backend, serviceName, resourceName, exactResourceName);
     byte[] fileBytes = Files.readAllBytes(Path.of(stateFile));
     if (!skipValidate) {
       StateCommandUtils.validateConfigData(
-          fileBytes, IndexBackupUtils.isBackendGlobalState(resolvedResourceName));
+          fileBytes, StateCommandUtils.isGlobalState(resolvedResourceName));
     }
 
     if (backupFile != null) {
-      String currentFileContents =
-          StateCommandUtils.getStateFileContents(
-              versionManager, serviceName, resolvedResourceName, stateFileName);
+      String currentFileContents;
+      if (StateCommandUtils.isGlobalState(resolvedResourceName)) {
+        currentFileContents = StateCommandUtils.getGlobalStateFileContents(s3Backend, serviceName);
+      } else {
+        currentFileContents =
+            StateCommandUtils.getIndexStateFileContents(
+                s3Backend, serviceName, resolvedResourceName);
+      }
       if (currentFileContents != null) {
         StateCommandUtils.writeStringToFile(currentFileContents, Path.of(backupFile).toFile());
       } else {
@@ -128,8 +133,12 @@ public class PutRemoteStateCommand implements Callable<Integer> {
       }
     }
 
-    StateCommandUtils.writeStateDataToBackend(
-        versionManager, serviceName, resolvedResourceName, stateFileName, fileBytes);
+    if (StateCommandUtils.isGlobalState(resolvedResourceName)) {
+      StateCommandUtils.writeGlobalStateDataToBackend(s3Backend, serviceName, fileBytes);
+    } else {
+      StateCommandUtils.writeIndexStateDataToBackend(
+          s3Backend, serviceName, resolvedResourceName, fileBytes);
+    }
     return 0;
   }
 }

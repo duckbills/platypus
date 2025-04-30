@@ -16,8 +16,12 @@
 package com.yelp.nrtsearch.server.grpc;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.google.protobuf.ByteString;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
+import com.yelp.nrtsearch.server.state.GlobalState;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
@@ -35,6 +39,7 @@ import org.junit.runners.JUnit4;
 public class CopyFileTest {
   private static final int TOTAL_CHUNKS = 10;
   private static final int CHUNK_SIZE = 1024 * 64;
+
   /**
    * This rule manages automatic graceful shutdown for the registered servers and channels at the
    * end of test.
@@ -51,11 +56,16 @@ public class CopyFileTest {
     // Generate a unique in-process server name.
     String serverName = InProcessServerBuilder.generateName();
 
+    GlobalState mockGlobalState = mock(GlobalState.class);
+    NrtsearchConfig mockConfiguration = mock(NrtsearchConfig.class);
+    when(mockGlobalState.getConfiguration()).thenReturn(mockConfiguration);
+    when(mockConfiguration.getUseKeepAliveForReplication()).thenReturn(true);
+
     // Create a server, add service, start, and register for automatic graceful shutdown.
     grpcCleanup.register(
         InProcessServerBuilder.forName(serverName)
             .directExecutor()
-            .addService(new LuceneServer.ReplicationServerImpl(null))
+            .addService(new NrtsearchServer.ReplicationServerImpl(mockGlobalState, false))
             .build()
             .start());
 
@@ -99,46 +109,6 @@ public class CopyFileTest {
     System.out.println(
         ((SendRawFileStreamObserver) responseObserver).getTransferStatus().getMessage());
   }
-
-  //    @Test
-  //    public void recvRawFileOnBlockingClient() throws Exception {
-  //        // Generate a unique in-process server name.
-  //        String serverName = InProcessServerBuilder.generateName();
-  //
-  //        // Create a server, add service, start, and register for automatic graceful shutdown.
-  //        grpcCleanup.register(InProcessServerBuilder
-  //                .forName(serverName).directExecutor().addService(new
-  // LuceneServer.ReplicationServerImpl(null)).build().start());
-  //
-  //        ReplicationServerGrpc.ReplicationServerBlockingStub blockingStub =
-  // ReplicationServerGrpc.newBlockingStub(
-  //                // Create a client channel and register for automatic graceful shutdown.
-  //
-  // grpcCleanup.register(InProcessChannelBuilder.forName(serverName).directExecutor().build()));
-  //        ReplicationServerGrpc.ReplicationServerStub stub = ReplicationServerGrpc.newStub(
-  //
-  // grpcCleanup.register(InProcessChannelBuilder.forName(serverName).directExecutor().build()));
-  //
-  //        //create and write to file total_chunk * chunk_size
-  //        File tempFile = folder.newFile("temp");
-  //        OutputStream outputStream = new FileOutputStream(tempFile);
-  //        Random random = new Random();
-  //        byte[] chunk = new byte[CHUNK_SIZE];
-  //        for (int i = 0; i < TOTAL_CHUNKS; i++) {
-  //            random.nextBytes(chunk);
-  //            outputStream.write(chunk);
-  //        }
-  //        outputStream.close();
-  //
-  //        Iterator<RawFileChunk> rawFileChunks =
-  // blockingStub.recvRawFile(FileInfo.newBuilder().setFileName(tempFile.getAbsolutePath()).setFpStart(0).build());
-  //        long totalBytesReceived = 0;
-  //        while(rawFileChunks.hasNext()){
-  //            RawFileChunk rawFileChunk = rawFileChunks.next();
-  //            totalBytesReceived+=rawFileChunk.getContent().size();
-  //        }
-  //        assertEquals(CHUNK_SIZE * TOTAL_CHUNKS, totalBytesReceived);
-  //    }
 
   static class SendRawFileStreamObserver implements StreamObserver<TransferStatus> {
 

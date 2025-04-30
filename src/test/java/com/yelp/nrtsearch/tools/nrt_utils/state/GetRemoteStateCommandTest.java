@@ -22,18 +22,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import com.amazonaws.auth.AnonymousAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
 import com.google.protobuf.util.JsonFormat;
 import com.yelp.nrtsearch.server.config.IndexStartConfig.IndexDataLocationType;
 import com.yelp.nrtsearch.server.grpc.GlobalStateInfo;
 import com.yelp.nrtsearch.server.grpc.IndexStateInfo;
 import com.yelp.nrtsearch.server.grpc.Mode;
 import com.yelp.nrtsearch.server.grpc.TestServer;
-import com.yelp.nrtsearch.server.luceneserver.index.ImmutableIndexState;
-import com.yelp.nrtsearch.server.luceneserver.state.StateUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.backend.RemoteStateBackend;
+import com.yelp.nrtsearch.server.index.ImmutableIndexState;
+import com.yelp.nrtsearch.server.state.StateUtils;
+import com.yelp.nrtsearch.server.state.backend.RemoteStateBackend;
+import com.yelp.nrtsearch.test_utils.AmazonS3Provider;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -54,8 +53,7 @@ public class GetRemoteStateCommandTest {
   }
 
   private AmazonS3 getS3() {
-    AmazonS3 s3 = new AmazonS3Client(new AnonymousAWSCredentials());
-    s3.setEndpoint(S3_ENDPOINT);
+    AmazonS3 s3 = AmazonS3Provider.createTestS3Client(S3_ENDPOINT);
     s3.createBucket(TEST_BUCKET);
     return s3;
   }
@@ -153,8 +151,8 @@ public class GetRemoteStateCommandTest {
     JsonFormat.parser().merge(contents, builder);
     IndexStateInfo stateInfo = builder.build();
     IndexStateInfo expected =
-        ((ImmutableIndexState) server.getGlobalState().getIndex("test_index"))
-            .getCurrentStateInfo();
+        ((ImmutableIndexState) server.getGlobalState().getIndexOrThrow("test_index"))
+            .getIndexStateInfo();
     assertEquals(expected, stateInfo);
   }
 
@@ -179,8 +177,8 @@ public class GetRemoteStateCommandTest {
     JsonFormat.parser().merge(contents, builder);
     IndexStateInfo stateInfo = builder.build();
     IndexStateInfo expected =
-        ((ImmutableIndexState) server.getGlobalState().getIndex("test_index"))
-            .getCurrentStateInfo();
+        ((ImmutableIndexState) server.getGlobalState().getIndexOrThrow("test_index"))
+            .getIndexStateInfo();
     assertEquals(expected, stateInfo);
   }
 }

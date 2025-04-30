@@ -17,17 +17,17 @@ package com.yelp.nrtsearch.server.grpc;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.protobuf.GeneratedMessageV3;
+import com.google.common.annotations.VisibleForTesting;
+import com.yelp.nrtsearch.server.grpc.ReplicationServerGrpc.ReplicationServerBlockingStub;
 import com.yelp.nrtsearch.server.grpc.discovery.PrimaryFileNameResolverProvider;
-import com.yelp.nrtsearch.server.luceneserver.SimpleCopyJob.FileChunkStreamingIterator;
+import com.yelp.nrtsearch.server.nrt.SimpleCopyJob.FileChunkStreamingIterator;
+import io.grpc.Deadline;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
 import java.io.Closeable;
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,15 +35,16 @@ import org.slf4j.LoggerFactory;
 public class ReplicationServerClient implements Closeable {
   public static final int BINARY_MAGIC = 0x3414f5c;
   public static final int MAX_MESSAGE_BYTES_SIZE = 1 * 1024 * 1024 * 1024;
+  public static final int FILE_UPDATE_INTERVAL_MS = 10 * 1000; // 10 seconds
 
   private static final ObjectMapper OBJECT_MAPPER =
-      new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);;
-  private static final int FILE_UPDATE_INTERVAL_MS = 10 * 1000; // 10 seconds
+      new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
   private static final Logger logger = LoggerFactory.getLogger(ReplicationServerClient.class);
 
   private final String host;
   private final int port;
   private final String discoveryFile;
+  private int discoveryFileUpdateIntervalMs;
   private final ManagedChannel channel;
 
   public ReplicationServerGrpc.ReplicationServerBlockingStub getBlockingStub() {
@@ -79,16 +80,30 @@ public class ReplicationServerClient implements Closeable {
 
   /** Construct client connecting to ReplicationServer server at {@code host:port}. */
   public ReplicationServerClient(String host, int port) {
-    this(
+    this(host, port, false);
+  }
+
+  /** Construct client connecting to ReplicationServer server at {@code host:port}. */
+  public ReplicationServerClient(String host, int port, boolean useKeepAlive) {
+    this(createManagedChannel(host, port, useKeepAlive), host, port, "");
+  }
+
+  private static ManagedChannel createManagedChannel(String host, int port, boolean useKeepAlive) {
+    ManagedChannelBuilder<?> managedChannelBuilder =
         ManagedChannelBuilder.forAddress(host, port)
-            // Channels are secure by default (via SSL/TLS). For the example we disable TLS to avoid
-            // needing certificates.
             .usePlaintext()
-            .maxInboundMessageSize(MAX_MESSAGE_BYTES_SIZE)
-            .build(),
-        host,
-        port,
-        "");
+            .maxInboundMessageSize(MAX_MESSAGE_BYTES_SIZE);
+    setKeepAlive(managedChannelBuilder, useKeepAlive);
+    return managedChannelBuilder.build();
+  }
+
+  static void setKeepAlive(ManagedChannelBuilder<?> managedChannelBuilder, boolean useKeepAlive) {
+    if (useKeepAlive) {
+      managedChannelBuilder
+          .keepAliveTime(1, TimeUnit.MINUTES)
+          .keepAliveTimeout(10, TimeUnit.SECONDS)
+          .keepAliveWithoutCalls(true);
+    }
   }
 
   /**
@@ -120,6 +135,7 @@ public class ReplicationServerClient implements Closeable {
         "",
         discoveryFileAndPort.port,
         discoveryFileAndPort.discoveryFile);
+    this.discoveryFileUpdateIntervalMs = updateIntervalMs;
   }
 
   /** Construct client for accessing ReplicationServer server using the existing channel. */
@@ -136,6 +152,11 @@ public class ReplicationServerClient implements Closeable {
     this.host = host;
     this.port = port;
     this.discoveryFile = discoveryFile;
+  }
+
+  @VisibleForTesting
+  int getDiscoveryFileUpdateIntervalMs() {
+    return discoveryFileUpdateIntervalMs;
   }
 
   public String getHost() {
@@ -168,17 +189,19 @@ public class ReplicationServerClient implements Closeable {
     }
   }
 
-  public void addReplicas(String indexName, int replicaId, String hostName, int port) {
-    AddReplicaRequest addDocumentRequest =
+  public void addReplicas(
+      String indexName, String indexId, String nodeName, String hostName, int port) {
+    AddReplicaRequest addReplicaRequest =
         AddReplicaRequest.newBuilder()
             .setMagicNumber(BINARY_MAGIC)
             .setIndexName(indexName)
-            .setReplicaId(replicaId)
+            .setIndexId(indexId)
+            .setNodeName(nodeName)
             .setHostName(hostName)
             .setPort(port)
             .build();
     try {
-      this.blockingStub.addReplicas(addDocumentRequest);
+      this.blockingStub.addReplicas(addReplicaRequest);
     } catch (Exception e) {
       /* Note this should allow the replica to start, but it means it will not be able to get new index updates
        * from Primary: https://github.com/Yelp/nrtsearch/issues/86 */
@@ -186,59 +209,78 @@ public class ReplicationServerClient implements Closeable {
     }
   }
 
-  public Iterator<RawFileChunk> recvRawFile(String fileName, long fpOffset, String indexName) {
+  public Iterator<RawFileChunk> recvRawFile(
+      String fileName, long fpOffset, String indexName, String indexId) {
     FileInfo fileInfo =
         FileInfo.newBuilder()
             .setFileName(fileName)
             .setFpStart(fpOffset)
             .setIndexName(indexName)
+            .setIndexId(indexId)
             .build();
     return this.blockingStub.recvRawFile(fileInfo);
   }
 
   public void recvRawFileV2(
-      String fileName, long fpOffset, String indexName, FileChunkStreamingIterator observer) {
+      String fileName,
+      long fpOffset,
+      String indexName,
+      String indexId,
+      FileChunkStreamingIterator observer) {
     FileInfo fileInfoV2 =
         FileInfo.newBuilder()
             .setFileName(fileName)
             .setFpStart(fpOffset)
             .setIndexName(indexName)
+            .setIndexId(indexId)
             .build();
     StreamObserver<FileInfo> responseObserver = this.asyncStub.recvRawFileV2(observer);
     observer.init(responseObserver);
     responseObserver.onNext(fileInfoV2);
   }
 
-  public CopyState recvCopyState(String indexName, int replicaId) {
+  public CopyState recvCopyState(String indexName, String indexId, int replicaId) {
     CopyStateRequest.Builder builder = CopyStateRequest.newBuilder();
     CopyStateRequest copyStateRequest =
         builder
             .setMagicNumber(BINARY_MAGIC)
             .setReplicaId(replicaId)
             .setIndexName(indexName)
+            .setIndexId(indexId)
             .build();
     return this.blockingStub.recvCopyState(copyStateRequest);
   }
 
   public Iterator<TransferStatus> copyFiles(
-      String indexName, long primaryGen, FilesMetadata filesMetadata) {
+      String indexName,
+      String indexId,
+      long primaryGen,
+      FilesMetadata filesMetadata,
+      Deadline deadline) {
     CopyFiles.Builder copyFilesBuilder = CopyFiles.newBuilder();
     CopyFiles copyFiles =
         copyFilesBuilder
             .setMagicNumber(BINARY_MAGIC)
             .setIndexName(indexName)
+            .setIndexId(indexId)
             .setPrimaryGen(primaryGen)
             .setFilesMetadata(filesMetadata)
             .build();
-    return this.blockingStub.copyFiles(copyFiles);
+    ReplicationServerBlockingStub blockingStub = this.blockingStub;
+    if (deadline != null) {
+      blockingStub = blockingStub.withDeadline(deadline);
+    }
+    return blockingStub.copyFiles(copyFiles);
   }
 
-  public TransferStatus newNRTPoint(String indexName, long primaryGen, long version) {
+  public TransferStatus newNRTPoint(
+      String indexName, String indexId, long primaryGen, long version) {
     NewNRTPoint.Builder builder = NewNRTPoint.newBuilder();
     NewNRTPoint request =
         builder
             .setMagicNumber(BINARY_MAGIC)
             .setIndexName(indexName)
+            .setIndexId(indexId)
             .setPrimaryGen(primaryGen)
             .setVersion(version)
             .build();
@@ -266,7 +308,6 @@ public class ReplicationServerClient implements Closeable {
     if (o == null || getClass() != o.getClass()) return false;
     ReplicationServerClient that = (ReplicationServerClient) o;
     return port == that.port
-        && Objects.equals(logger, that.logger)
         && Objects.equals(host, that.host)
         && Objects.equals(discoveryFile, that.discoveryFile)
         && Objects.equals(channel, that.channel)
@@ -277,65 +318,6 @@ public class ReplicationServerClient implements Closeable {
   @Override
   public int hashCode() {
     return Objects.hash(logger, host, port, channel, blockingStub, asyncStub);
-  }
-
-  public static class ReplicationServerClientManager<T extends GeneratedMessageV3> {
-    Logger logger = LoggerFactory.getLogger(ReplicationServerClientManager.class);
-    private static final String LOCALHOST = "localhost";
-    private static final int PORT = 50052;
-    Map<RequestType, ReplicationServerClient> replicationServerClients = new ConcurrentHashMap<>();
-
-    public enum RequestType {
-      ADD_REPLICAS,
-      COPY_FILES,
-      WRT_NRT_POINT,
-      NEW_NRT_POINT,
-      SEND_ME_FILES;
-    }
-
-    /* Each requestType reuses its channel (connection), so we need to make sure only one
-     * instance of ReplicationServerClientManager is used by callers */
-    @SuppressWarnings("unchecked")
-    public T sendRequest(RequestType requestType, T request) {
-      ReplicationServerClient client;
-      switch (requestType) {
-        case ADD_REPLICAS:
-          client =
-              replicationServerClients.computeIfAbsent(
-                  RequestType.ADD_REPLICAS, c -> new ReplicationServerClient(LOCALHOST, PORT));
-          AddReplicaRequest addReplicaRequest = (AddReplicaRequest) request;
-          AddReplicaResponse response = client.blockingStub.addReplicas(addReplicaRequest);
-          return (T) response;
-        case COPY_FILES:
-          client =
-              replicationServerClients.computeIfAbsent(
-                  RequestType.COPY_FILES, c -> new ReplicationServerClient(LOCALHOST, PORT));
-          break;
-        case WRT_NRT_POINT:
-          client =
-              replicationServerClients.computeIfAbsent(
-                  RequestType.WRT_NRT_POINT, c -> new ReplicationServerClient(LOCALHOST, PORT));
-          break;
-        case NEW_NRT_POINT:
-          client =
-              replicationServerClients.computeIfAbsent(
-                  RequestType.NEW_NRT_POINT, c -> new ReplicationServerClient(LOCALHOST, PORT));
-          break;
-        case SEND_ME_FILES:
-          client =
-              replicationServerClients.computeIfAbsent(
-                  RequestType.SEND_ME_FILES, c -> new ReplicationServerClient(LOCALHOST, PORT));
-          break;
-        default:
-          logger.info(
-              String.format(
-                  String.format(
-                      "Invalid request type %s Supported requestTypes: %s",
-                      requestType, RequestType.values())));
-          break;
-      }
-      return null;
-    }
   }
 
   @Override

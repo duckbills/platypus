@@ -25,21 +25,20 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import com.amazonaws.auth.AnonymousAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
 import com.google.protobuf.Int32Value;
 import com.google.protobuf.util.JsonFormat;
-import com.yelp.nrtsearch.server.backup.VersionManager;
 import com.yelp.nrtsearch.server.config.IndexStartConfig.IndexDataLocationType;
 import com.yelp.nrtsearch.server.grpc.GlobalStateInfo;
 import com.yelp.nrtsearch.server.grpc.IndexLiveSettings;
 import com.yelp.nrtsearch.server.grpc.IndexStateInfo;
 import com.yelp.nrtsearch.server.grpc.Mode;
 import com.yelp.nrtsearch.server.grpc.TestServer;
-import com.yelp.nrtsearch.server.luceneserver.index.ImmutableIndexState;
-import com.yelp.nrtsearch.server.luceneserver.state.StateUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.backend.RemoteStateBackend;
+import com.yelp.nrtsearch.server.index.ImmutableIndexState;
+import com.yelp.nrtsearch.server.remote.s3.S3Backend;
+import com.yelp.nrtsearch.server.state.StateUtils;
+import com.yelp.nrtsearch.server.state.backend.RemoteStateBackend;
+import com.yelp.nrtsearch.test_utils.AmazonS3Provider;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -59,8 +58,7 @@ public class PutRemoteStateCommandTest {
   }
 
   private AmazonS3 getS3() {
-    AmazonS3 s3 = new AmazonS3Client(new AnonymousAWSCredentials());
-    s3.setEndpoint(S3_ENDPOINT);
+    AmazonS3 s3 = AmazonS3Provider.createTestS3Client(S3_ENDPOINT);
     s3.createBucket(TEST_BUCKET);
     return s3;
   }
@@ -81,20 +79,15 @@ public class PutRemoteStateCommandTest {
     return server;
   }
 
-  private VersionManager getVersionManager() {
-    return new VersionManager(getS3(), TEST_BUCKET);
+  private S3Backend getRemoteBackend() {
+    return new S3Backend(TEST_BUCKET, false, getS3());
   }
 
   @Test
   public void testPutGlobalState() throws IOException {
     TestServer server = getTestServer();
-    VersionManager versionManager = getVersionManager();
-    String contents =
-        StateCommandUtils.getStateFileContents(
-            versionManager,
-            SERVICE_NAME,
-            RemoteStateBackend.GLOBAL_STATE_RESOURCE,
-            StateUtils.GLOBAL_STATE_FILE);
+    S3Backend remoteBackend = getRemoteBackend();
+    String contents = StateCommandUtils.getGlobalStateFileContents(remoteBackend, SERVICE_NAME);
     assertEquals(1, server.indices().size());
 
     CommandLine cmd = getInjectedCommand();
@@ -122,11 +115,10 @@ public class PutRemoteStateCommandTest {
   public void testPutIndexState() throws IOException {
     TestServer server = getTestServer();
     IndexStateInfo currentState =
-        ((ImmutableIndexState) server.getGlobalState().getIndex("test_index"))
-            .getCurrentStateInfo();
+        ((ImmutableIndexState) server.getGlobalState().getIndexOrThrow("test_index"))
+            .getIndexStateInfo();
     IndexStateInfo updatedState =
-        currentState
-            .toBuilder()
+        currentState.toBuilder()
             .setLiveSettings(
                 IndexLiveSettings.newBuilder()
                     .setSliceMaxSegments(Int32Value.newBuilder().setValue(1).build())
@@ -147,8 +139,8 @@ public class PutRemoteStateCommandTest {
 
     server.restart();
     IndexStateInfo newCurrentState =
-        ((ImmutableIndexState) server.getGlobalState().getIndex("test_index"))
-            .getCurrentStateInfo();
+        ((ImmutableIndexState) server.getGlobalState().getIndexOrThrow("test_index"))
+            .getIndexStateInfo();
     assertEquals(updatedState, newCurrentState);
     assertNotEquals(currentState, newCurrentState);
   }
@@ -157,11 +149,10 @@ public class PutRemoteStateCommandTest {
   public void testPutIndexStateExact() throws IOException {
     TestServer server = getTestServer();
     IndexStateInfo currentState =
-        ((ImmutableIndexState) server.getGlobalState().getIndex("test_index"))
-            .getCurrentStateInfo();
+        ((ImmutableIndexState) server.getGlobalState().getIndexOrThrow("test_index"))
+            .getIndexStateInfo();
     IndexStateInfo updatedState =
-        currentState
-            .toBuilder()
+        currentState.toBuilder()
             .setLiveSettings(
                 IndexLiveSettings.newBuilder()
                     .setSliceMaxSegments(Int32Value.newBuilder().setValue(1).build())
@@ -183,8 +174,8 @@ public class PutRemoteStateCommandTest {
 
     server.restart();
     IndexStateInfo newCurrentState =
-        ((ImmutableIndexState) server.getGlobalState().getIndex("test_index"))
-            .getCurrentStateInfo();
+        ((ImmutableIndexState) server.getGlobalState().getIndexOrThrow("test_index"))
+            .getIndexStateInfo();
     assertEquals(updatedState, newCurrentState);
     assertNotEquals(currentState, newCurrentState);
   }
@@ -207,11 +198,7 @@ public class PutRemoteStateCommandTest {
     assertEquals(1, exitCode);
 
     String contents =
-        StateCommandUtils.getStateFileContents(
-            getVersionManager(),
-            SERVICE_NAME,
-            RemoteStateBackend.GLOBAL_STATE_RESOURCE,
-            StateUtils.GLOBAL_STATE_FILE);
+        StateCommandUtils.getGlobalStateFileContents(getRemoteBackend(), SERVICE_NAME);
     assertNull(contents);
   }
 
@@ -234,11 +221,7 @@ public class PutRemoteStateCommandTest {
     assertEquals(0, exitCode);
 
     String contents =
-        StateCommandUtils.getStateFileContents(
-            getVersionManager(),
-            SERVICE_NAME,
-            RemoteStateBackend.GLOBAL_STATE_RESOURCE,
-            StateUtils.GLOBAL_STATE_FILE);
+        StateCommandUtils.getGlobalStateFileContents(getRemoteBackend(), SERVICE_NAME);
     assertNotNull(contents);
   }
 
@@ -266,13 +249,8 @@ public class PutRemoteStateCommandTest {
   @Test
   public void testBackupFile() throws IOException {
     TestServer server = getTestServer();
-    VersionManager versionManager = getVersionManager();
-    String contents =
-        StateCommandUtils.getStateFileContents(
-            versionManager,
-            SERVICE_NAME,
-            RemoteStateBackend.GLOBAL_STATE_RESOURCE,
-            StateUtils.GLOBAL_STATE_FILE);
+    S3Backend remoteBackend = getRemoteBackend();
+    String contents = StateCommandUtils.getGlobalStateFileContents(remoteBackend, SERVICE_NAME);
     assertEquals(1, server.indices().size());
 
     CommandLine cmd = getInjectedCommand();

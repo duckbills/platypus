@@ -15,44 +15,52 @@
  */
 package com.yelp.nrtsearch.server.plugins;
 
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
-import io.prometheus.client.CollectorRegistry;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
+import com.yelp.nrtsearch.server.monitoring.BootstrapMetrics;
+import com.yelp.nrtsearch.server.remote.PluginDownloader;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.io.File;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Class to handle the loading and registration of nrtsearch plugins.
  *
- * <p>Loads the plugins specified by the {@link LuceneServerConfiguration}. Plugins are located by
- * searching the config provided plugin search path for a folder matching the plugin name. A
- * classloader is created with the jars provided in the plugin directory. The plugin provides a
- * config file containing the {@link Plugin} classname that should be loaded. Reflection is used to
- * give the loaded plugin access to the lucene server config.
+ * <p>Loads the plugins specified by the {@link NrtsearchConfig}. Plugins are located by searching
+ * the config provided plugin search path for a folder matching the plugin name. A classloader is
+ * created with the jars provided in the plugin directory. The plugin provides a config file
+ * containing the {@link Plugin} classname that should be loaded. Reflection is used to give the
+ * loaded plugin access to the server config.
  */
 public class PluginsService {
-  private static final Logger logger = LoggerFactory.getLogger(Plugin.class.getName());
+  private static final Logger logger = LoggerFactory.getLogger(PluginsService.class);
 
-  private final LuceneServerConfiguration config;
-  private final CollectorRegistry collectorRegistry;
+  private final NrtsearchConfig config;
+  private final PrometheusRegistry prometheusRegistry;
   private final List<PluginDescriptor> loadedPluginDescriptors = new ArrayList<>();
 
-  public PluginsService(LuceneServerConfiguration config, CollectorRegistry collectorRegistry) {
+  private final PluginDownloader pluginDownloader;
+
+  public PluginsService(
+      NrtsearchConfig config,
+      PluginDownloader pluginDownloader,
+      PrometheusRegistry prometheusRegistry) {
     this.config = config;
-    this.collectorRegistry = collectorRegistry;
+    this.prometheusRegistry = prometheusRegistry;
+    this.pluginDownloader = pluginDownloader;
   }
 
   /**
-   * Load the list of plugins specified in the {@link LuceneServerConfiguration}. This handles both
-   * the loading of the plugin class from provided jars and creation of a new instance.
+   * Load the list of plugins specified in the {@link NrtsearchConfig}. This handles both the
+   * loading of the plugin class from provided jars and creation of a new instance.
    *
    * @return list of loaded plugin instances
    */
@@ -62,10 +70,15 @@ public class PluginsService {
     logger.debug("Plugin search path: " + pluginSearchPath);
     List<Plugin> loadedPlugins = new ArrayList<>();
     for (String plugin : config.getPlugins()) {
+      long startNs = System.nanoTime();
       logger.info("Loading plugin: " + plugin);
-      PluginDescriptor descriptor = loadPlugin(plugin, pluginSearchPath);
+      PluginDescriptor descriptor = loadPlugin(plugin, pluginSearchPath, pluginDownloader);
       loadedPluginDescriptors.add(descriptor);
       loadedPlugins.add(descriptor.getPlugin());
+      BootstrapMetrics.pluginInitializationTimer
+          .labelValues(
+              descriptor.getPluginMetadata().getName(), descriptor.getPluginMetadata().getVersion())
+          .set((System.nanoTime() - startNs) / 1_000_000_000.0);
     }
     return loadedPlugins;
   }
@@ -95,9 +108,7 @@ public class PluginsService {
    * OS path separator.
    */
   List<File> getPluginSearchPath() {
-    return Stream.of(config.getPluginSearchPath().split(File.pathSeparator))
-        .map(File::new)
-        .collect(Collectors.toList());
+    return config.getPluginSearchPath().stream().map(File::new).collect(Collectors.toList());
   }
 
   /**
@@ -109,7 +120,11 @@ public class PluginsService {
    * @param searchPath list of directories to search
    * @return a descriptor representing the loaded plugin
    */
-  PluginDescriptor loadPlugin(String pluginName, List<File> searchPath) {
+  PluginDescriptor loadPlugin(
+      String pluginName, List<File> searchPath, PluginDownloader pluginDownloader) {
+    Path defaultSearchPath = searchPath.getFirst().toPath();
+    pluginName = pluginDownloader.downloadPluginIfNeeded(pluginName, defaultSearchPath);
+
     File pluginInstallDir = findPluginInstallDir(pluginName, searchPath);
     logger.debug("Plugin install dir: " + pluginInstallDir);
     PluginMetadata metadata = PluginMetadata.fromInstallDir(pluginInstallDir);
@@ -181,10 +196,10 @@ public class PluginsService {
     try {
       Plugin plugin =
           pluginClass
-              .getDeclaredConstructor(new Class[] {LuceneServerConfiguration.class})
+              .getDeclaredConstructor(new Class[] {NrtsearchConfig.class})
               .newInstance(config);
       if (plugin instanceof MetricsPlugin) {
-        ((MetricsPlugin) plugin).registerMetrics(collectorRegistry);
+        ((MetricsPlugin) plugin).registerMetrics(prometheusRegistry);
       }
       return plugin;
     } catch (Exception e) {

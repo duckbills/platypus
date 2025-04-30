@@ -20,10 +20,11 @@ import static org.junit.Assert.assertEquals;
 
 import com.google.protobuf.util.JsonFormat;
 import com.yelp.nrtsearch.server.config.IndexStartConfig.IndexDataLocationType;
-import com.yelp.nrtsearch.server.luceneserver.warming.Warmer;
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.After;
@@ -80,17 +81,18 @@ public class WarmingQueriesTest {
                 .setNumQueriesThreshold(0)
                 .build());
 
-    Path downloadPath =
+    InputStream queriesStream =
         replica
-            .getLegacyArchiver()
-            .download(
-                SERVICE_NAME,
-                server.getGlobalState().getDataResourceForIndex("test_index")
-                    + Warmer.WARMING_QUERIES_RESOURCE);
-
-    Path warmingQueriesDir = downloadPath.resolve("warming_queries");
-    Path warmingQueriesFile = warmingQueriesDir.resolve("warming_queries.txt");
-    List<String> lines = Files.readAllLines(warmingQueriesFile);
+            .getRemoteBackend()
+            .downloadWarmingQueries(
+                SERVICE_NAME, server.getGlobalState().getDataResourceForIndex("test_index"));
+    List<String> lines = new ArrayList<>();
+    try (BufferedReader reader = new BufferedReader(new InputStreamReader(queriesStream))) {
+      String line;
+      while ((line = reader.readLine()) != null) {
+        lines.add(line);
+      }
+    }
     assertEquals(1, lines.size());
     assertEquals(
         JsonFormat.printer().omittingInsignificantWhitespace().print(searchRequest), lines.get(0));

@@ -15,142 +15,165 @@
  */
 package com.yelp.nrtsearch.server.config;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.yelp.nrtsearch.server.concurrent.ExecutorFactory;
+import com.yelp.nrtsearch.server.utils.JsonUtils;
+import java.util.HashMap;
+import java.util.Map;
+
 /** Configuration for various ThreadPool Settings used in nrtsearch */
 public class ThreadPoolConfiguration {
+  public static final String CONFIG_PREFIX = "threadPoolConfiguration.";
 
-  private static final int DEFAULT_MAX_SEARCHING_THREADS =
-      ((Runtime.getRuntime().availableProcessors() * 3) / 2) + 1;
-  private static final int DEFAULT_MAX_SEARCH_BUFFERED_ITEMS =
-      Math.max(1000, 2 * DEFAULT_MAX_SEARCHING_THREADS);
+  private static final int AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors();
+  public static final int DEFAULT_SEARCHING_THREADS = ((AVAILABLE_PROCESSORS * 3) / 2) + 1;
+  public static final int DEFAULT_SEARCH_BUFFERED_ITEMS =
+      Math.max(1000, 2 * DEFAULT_SEARCHING_THREADS);
 
-  private static final int DEFAULT_MAX_INDEXING_THREADS =
-      Runtime.getRuntime().availableProcessors() + 1;
-  private static final int DEFAULT_MAX_FILL_FIELDS_THREADS = 1;
+  public static final int DEFAULT_INDEXING_THREADS = AVAILABLE_PROCESSORS + 1;
+  public static final int DEFAULT_INDEXING_BUFFERED_ITEMS =
+      Math.max(200, 2 * DEFAULT_INDEXING_THREADS);
 
-  private static final int DEFAULT_MAX_INDEXING_BUFFERED_ITEMS =
-      Math.max(200, 2 * DEFAULT_MAX_INDEXING_THREADS);
+  public static final int DEFAULT_GRPC_SERVER_THREADS = DEFAULT_INDEXING_THREADS;
+  public static final int DEFAULT_GRPC_SERVER_BUFFERED_ITEMS = DEFAULT_INDEXING_BUFFERED_ITEMS;
 
-  private static final int DEFAULT_MAX_GRPC_LUCENESERVER_THREADS = DEFAULT_MAX_INDEXING_THREADS;
-  private static final int DEFAULT_MAX_GRPC_LUCENESERVER_BUFFERED_ITEMS =
-      DEFAULT_MAX_INDEXING_BUFFERED_ITEMS;
+  public static final int DEFAULT_GRPC_REPLICATIONSERVER_THREADS = DEFAULT_INDEXING_THREADS;
+  public static final int DEFAULT_GRPC_REPLICATIONSERVER_BUFFERED_ITEMS =
+      DEFAULT_INDEXING_BUFFERED_ITEMS;
 
-  private static final int DEFAULT_MAX_GRPC_REPLICATIONSERVER_THREADS =
-      DEFAULT_MAX_INDEXING_THREADS;
-  private static final int DEFAULT_MAX_GRPC_REPLICATIONSERVER_BUFFERED_ITEMS =
-      DEFAULT_MAX_INDEXING_BUFFERED_ITEMS;
+  public static final int DEFAULT_FETCH_THREADS = 1;
+  public static final int DEFAULT_FETCH_BUFFERED_ITEMS = DEFAULT_SEARCH_BUFFERED_ITEMS;
 
-  public static final int DEFAULT_MIN_PARALLEL_FETCH_NUM_FIELDS = 20;
-  public static final int DEFAULT_MIN_PARALLEL_FETCH_NUM_HITS = 50;
+  public static final int DEFAULT_GRPC_THREADS = AVAILABLE_PROCESSORS * 2;
+  public static final int DEFAULT_GRPC_BUFFERED_ITEMS = 8;
 
-  private final int maxSearchingThreads;
-  private final int maxSearchBufferedItems;
+  public static final int DEFAULT_METRICS_THREADS = AVAILABLE_PROCESSORS;
+  public static final int DEFAULT_METRICS_BUFFERED_ITEMS = 8;
 
-  private final int maxFetchThreads;
-  private final int minParallelFetchNumFields;
-  private final int minParallelFetchNumHits;
-  private final boolean parallelFetchByField;
+  public static final int DEFAULT_VECTOR_MERGE_THREADS = AVAILABLE_PROCESSORS;
+  public static final int DEFAULT_VECTOR_MERGE_BUFFERED_ITEMS =
+      Math.max(100, 2 * DEFAULT_VECTOR_MERGE_THREADS);
 
-  private final int maxIndexingThreads;
-  private final int maxIndexingBufferedItems;
+  /**
+   * Settings for a {@link ExecutorFactory.ExecutorType}.
+   *
+   * @param maxThreads max number of threads
+   * @param maxBufferedItems max number of buffered items
+   * @param threadNamePrefix prefix for thread names
+   */
+  public record ThreadPoolSettings(int maxThreads, int maxBufferedItems, String threadNamePrefix) {}
 
-  private final int maxGrpcLuceneserverThreads;
-  private final int maxGrpcLuceneserverBufferedItems;
+  private static final Map<ExecutorFactory.ExecutorType, ThreadPoolSettings>
+      defaultThreadPoolSettings =
+          Map.of(
+              ExecutorFactory.ExecutorType.SEARCH,
+              new ThreadPoolSettings(
+                  DEFAULT_SEARCHING_THREADS, DEFAULT_SEARCH_BUFFERED_ITEMS, "LuceneSearchExecutor"),
+              ExecutorFactory.ExecutorType.INDEX,
+              new ThreadPoolSettings(
+                  DEFAULT_INDEXING_THREADS,
+                  DEFAULT_INDEXING_BUFFERED_ITEMS,
+                  "LuceneIndexingExecutor"),
+              ExecutorFactory.ExecutorType.SERVER,
+              new ThreadPoolSettings(
+                  DEFAULT_GRPC_SERVER_THREADS,
+                  DEFAULT_GRPC_SERVER_BUFFERED_ITEMS,
+                  "GrpcServerExecutor"),
+              ExecutorFactory.ExecutorType.REPLICATIONSERVER,
+              new ThreadPoolSettings(
+                  DEFAULT_GRPC_REPLICATIONSERVER_THREADS,
+                  DEFAULT_GRPC_REPLICATIONSERVER_BUFFERED_ITEMS,
+                  "GrpcReplicationServerExecutor"),
+              ExecutorFactory.ExecutorType.FETCH,
+              new ThreadPoolSettings(
+                  DEFAULT_FETCH_THREADS, DEFAULT_FETCH_BUFFERED_ITEMS, "LuceneFetchExecutor"),
+              ExecutorFactory.ExecutorType.GRPC,
+              new ThreadPoolSettings(
+                  DEFAULT_GRPC_THREADS, DEFAULT_GRPC_BUFFERED_ITEMS, "GrpcExecutor"),
+              ExecutorFactory.ExecutorType.METRICS,
+              new ThreadPoolSettings(
+                  DEFAULT_METRICS_THREADS, DEFAULT_METRICS_BUFFERED_ITEMS, "MetricsExecutor"),
+              ExecutorFactory.ExecutorType.VECTORMERGE,
+              new ThreadPoolSettings(
+                  DEFAULT_VECTOR_MERGE_THREADS,
+                  DEFAULT_VECTOR_MERGE_BUFFERED_ITEMS,
+                  "VectorMergeExecutor"));
 
-  private final int maxGrpcReplicationserverThreads;
-  private final int maxGrpcReplicationserverBufferedItems;
+  private final Map<ExecutorFactory.ExecutorType, ThreadPoolSettings> threadPoolSettings;
 
   public ThreadPoolConfiguration(YamlConfigReader configReader) {
-    maxSearchingThreads =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxSearchingThreads", DEFAULT_MAX_SEARCHING_THREADS);
-    maxSearchBufferedItems =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxSearchBufferedItems", DEFAULT_MAX_SEARCH_BUFFERED_ITEMS);
-    maxFetchThreads =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxFetchThreads", DEFAULT_MAX_FILL_FIELDS_THREADS);
-    minParallelFetchNumFields =
-        configReader.getInteger(
-            "threadPoolConfiguration.minParallelFetchNumFields",
-            DEFAULT_MIN_PARALLEL_FETCH_NUM_FIELDS);
-    minParallelFetchNumHits =
-        configReader.getInteger(
-            "threadPoolConfiguration.minParallelFetchNumHits", DEFAULT_MIN_PARALLEL_FETCH_NUM_HITS);
-    parallelFetchByField =
-        configReader.getBoolean("threadPoolConfiguration.parallelFetchByField", true);
-
-    maxIndexingThreads =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxIndexingThreads", DEFAULT_MAX_INDEXING_THREADS);
-    maxIndexingBufferedItems =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxIndexingBufferedItems",
-            DEFAULT_MAX_INDEXING_BUFFERED_ITEMS);
-
-    maxGrpcLuceneserverThreads =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxGrpcLuceneserverThreads",
-            DEFAULT_MAX_GRPC_LUCENESERVER_THREADS);
-    maxGrpcLuceneserverBufferedItems =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxGrpcLuceneserverBufferedItems",
-            DEFAULT_MAX_GRPC_LUCENESERVER_BUFFERED_ITEMS);
-
-    maxGrpcReplicationserverThreads =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxGrpcReplicationserverThreads",
-            DEFAULT_MAX_GRPC_REPLICATIONSERVER_THREADS);
-    maxGrpcReplicationserverBufferedItems =
-        configReader.getInteger(
-            "threadPoolConfiguration.maxGrpcReplicationserverBufferedItems",
-            DEFAULT_MAX_GRPC_REPLICATIONSERVER_BUFFERED_ITEMS);
+    threadPoolSettings = new HashMap<>();
+    for (ExecutorFactory.ExecutorType executorType : ExecutorFactory.ExecutorType.values()) {
+      ThreadPoolSettings defaultSettings = defaultThreadPoolSettings.get(executorType);
+      String poolConfigPrefix = CONFIG_PREFIX + executorType.name().toLowerCase() + ".";
+      int maxThreads =
+          getNumThreads(
+              configReader, poolConfigPrefix + "maxThreads", defaultSettings.maxThreads());
+      int maxBufferedItems =
+          configReader.getInteger(
+              poolConfigPrefix + "maxBufferedItems", defaultSettings.maxBufferedItems());
+      String threadNamePrefix =
+          configReader.getString(
+              poolConfigPrefix + "threadNamePrefix", defaultSettings.threadNamePrefix());
+      threadPoolSettings.put(
+          executorType, new ThreadPoolSettings(maxThreads, maxBufferedItems, threadNamePrefix));
+    }
   }
 
-  public int getMaxSearchingThreads() {
-    return maxSearchingThreads;
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  static class ThreadsConfig {
+    private int min = 1;
+    private int max = Integer.MAX_VALUE;
+    private int offset = 0;
+    private float multiplier = 1.0f;
+
+    public void setMin(int min) {
+      if (min <= 0) {
+        throw new IllegalArgumentException("min must be >= 1");
+      }
+      this.min = min;
+    }
+
+    public void setMax(int max) {
+      if (max <= 0) {
+        throw new IllegalArgumentException("max must be >= 1");
+      }
+      this.max = max;
+    }
+
+    public void setOffset(int offset) {
+      this.offset = offset;
+    }
+
+    public void setMultiplier(float multiplier) {
+      this.multiplier = multiplier;
+    }
+
+    public int computeNumThreads() {
+      int threads = (int) ((AVAILABLE_PROCESSORS * multiplier) + offset);
+      threads = Math.min(threads, max);
+      threads = Math.max(threads, min);
+      return threads;
+    }
   }
 
-  public int getMaxSearchBufferedItems() {
-    return maxSearchBufferedItems;
+  static int getNumThreads(YamlConfigReader configReader, String key, int defaultValue) {
+    return configReader.get(
+        key,
+        obj -> {
+          if (obj instanceof Number) {
+            return ((Number) obj).intValue();
+          } else if (obj instanceof Map) {
+            return JsonUtils.convertValue(obj, ThreadsConfig.class).computeNumThreads();
+          } else {
+            throw new IllegalArgumentException(
+                "Invalid thread pool config type: " + obj.getClass() + ", key: " + key);
+          }
+        },
+        defaultValue);
   }
 
-  public int getMaxFetchThreads() {
-    return maxFetchThreads;
-  }
-
-  public int getMinParallelFetchNumFields() {
-    return minParallelFetchNumFields;
-  }
-
-  public int getMinParallelFetchNumHits() {
-    return minParallelFetchNumHits;
-  }
-
-  public boolean getParallelFetchByField() {
-    return parallelFetchByField;
-  }
-
-  public int getMaxIndexingThreads() {
-    return maxIndexingThreads;
-  }
-
-  public int getMaxIndexingBufferedItems() {
-    return maxIndexingBufferedItems;
-  }
-
-  public int getMaxGrpcLuceneserverThreads() {
-    return maxGrpcLuceneserverThreads;
-  }
-
-  public int getMaxGrpcReplicationserverThreads() {
-    return maxGrpcReplicationserverThreads;
-  }
-
-  public int getMaxGrpcLuceneserverBufferedItems() {
-    return maxGrpcLuceneserverBufferedItems;
-  }
-
-  public int getMaxGrpcReplicationserverBufferedItems() {
-    return maxGrpcReplicationserverBufferedItems;
+  public ThreadPoolSettings getThreadPoolSettings(ExecutorFactory.ExecutorType executorType) {
+    return threadPoolSettings.get(executorType);
   }
 }

@@ -19,17 +19,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.yelp.nrtsearch.server.ServerTestCase;
+import com.yelp.nrtsearch.server.facet.DrillSidewaysImpl;
 import com.yelp.nrtsearch.server.grpc.SearchResponse.Diagnostics;
-import com.yelp.nrtsearch.server.luceneserver.IndexState;
-import com.yelp.nrtsearch.server.luceneserver.ServerTestCase;
-import com.yelp.nrtsearch.server.luceneserver.ShardState;
-import com.yelp.nrtsearch.server.luceneserver.facet.DrillSidewaysImpl;
-import com.yelp.nrtsearch.server.luceneserver.search.SearchCollectorManager;
-import com.yelp.nrtsearch.server.luceneserver.search.SearchContext;
-import com.yelp.nrtsearch.server.luceneserver.search.SearchCutoffWrapper;
-import com.yelp.nrtsearch.server.luceneserver.search.SearchCutoffWrapper.CollectionTimeoutException;
-import com.yelp.nrtsearch.server.luceneserver.search.SearchRequestProcessor;
-import com.yelp.nrtsearch.server.luceneserver.search.SearcherResult;
+import com.yelp.nrtsearch.server.index.IndexState;
+import com.yelp.nrtsearch.server.index.ShardState;
+import com.yelp.nrtsearch.server.search.SearchCollectorManager;
+import com.yelp.nrtsearch.server.search.SearchContext;
+import com.yelp.nrtsearch.server.search.SearchCutoffWrapper;
+import com.yelp.nrtsearch.server.search.SearchCutoffWrapper.CollectionTimeoutException;
+import com.yelp.nrtsearch.server.search.SearchRequestProcessor;
+import com.yelp.nrtsearch.server.search.SearcherResult;
 import io.grpc.testing.GrpcCleanupRule;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -83,12 +83,12 @@ public class TimeoutTest extends ServerTestCase {
 
   @Override
   public String getExtraConfig() {
-    return String.join("\n", "threadPoolConfiguration:", "  maxSearchingThreads: 1");
+    return String.join("\n", "threadPoolConfiguration:", "  search:", "    maxThreads: 1");
   }
 
   @Override
   public void initIndex(String name) throws Exception {
-    IndexWriter writer = getGlobalState().getIndex(name).getShard(0).writer;
+    IndexWriter writer = getGlobalState().getIndexOrThrow(name).getShard(0).writer;
     // don't want any merges for these tests
     writer.getConfig().setMergePolicy(NoMergePolicy.INSTANCE);
 
@@ -152,14 +152,14 @@ public class TimeoutTest extends ServerTestCase {
   public void testNumSegments() throws Exception {
     SearcherTaxonomyManager.SearcherAndTaxonomy s = null;
     try {
-      s = getGlobalState().getIndex(TEST_INDEX).getShard(0).acquire();
-      assertEquals(NUM_DOCS / SEGMENT_CHUNK, s.searcher.getIndexReader().leaves().size());
-      for (LeafReaderContext context : s.searcher.getIndexReader().leaves()) {
+      s = getGlobalState().getIndexOrThrow(TEST_INDEX).getShard(0).acquire();
+      assertEquals(NUM_DOCS / SEGMENT_CHUNK, s.searcher().getIndexReader().leaves().size());
+      for (LeafReaderContext context : s.searcher().getIndexReader().leaves()) {
         assertEquals(SEGMENT_CHUNK, context.reader().maxDoc());
       }
     } finally {
       if (s != null) {
-        getGlobalState().getIndex(TEST_INDEX).getShard(0).release(s);
+        getGlobalState().getIndexOrThrow(TEST_INDEX).getShard(0).release(s);
       }
     }
   }
@@ -237,7 +237,7 @@ public class TimeoutTest extends ServerTestCase {
                 throw new RuntimeException(e);
               }
             });
-    assertEquals(NUM_DOCS, hits.totalHits.value);
+    assertEquals(NUM_DOCS, hits.totalHits.value());
     assertEquals(NUM_DOCS - 1, hits.scoreDocs[0].score, 0);
   }
 
@@ -324,7 +324,7 @@ public class TimeoutTest extends ServerTestCase {
                 throw new RuntimeException(e);
               }
             });
-    assertEquals(expectedHits, hits.totalHits.value);
+    assertEquals(expectedHits, hits.totalHits.value());
   }
 
   @Test(expected = CollectionTimeoutException.class)
@@ -338,7 +338,15 @@ public class TimeoutTest extends ServerTestCase {
             .setTimeoutSec(5)
             .build();
 
-    verifyTimeoutException(request);
+    try {
+      verifyTimeoutException(request);
+    } catch (RuntimeException e) {
+      CollectionTimeoutException timeoutException = findTimeoutException(e);
+      if (timeoutException != null) {
+        throw new CollectionTimeoutException(timeoutException.getMessage(), e);
+      }
+      throw e;
+    }
   }
 
   @Test(expected = CollectionTimeoutException.class)
@@ -377,8 +385,15 @@ public class TimeoutTest extends ServerTestCase {
             .setTimeoutSec(7)
             .setTimeoutCheckEvery(5)
             .build();
-
-    verifyTimeoutException(request);
+    try {
+      verifyTimeoutException(request);
+    } catch (RuntimeException e) {
+      CollectionTimeoutException timeoutException = findTimeoutException(e);
+      if (timeoutException != null) {
+        throw new CollectionTimeoutException(timeoutException.getMessage(), e);
+      }
+      throw e;
+    }
   }
 
   @Test(expected = CollectionTimeoutException.class)
@@ -443,13 +458,19 @@ public class TimeoutTest extends ServerTestCase {
   private TopDocs queryWithFunction(SearchRequest request, Function<SearchContext, TopDocs> func)
       throws Exception {
     SearcherTaxonomyManager.SearcherAndTaxonomy s = null;
-    IndexState indexState = getGlobalState().getIndex(TEST_INDEX);
+    IndexState indexState = getGlobalState().getIndexOrThrow(TEST_INDEX);
     ShardState shardState = indexState.getShard(0);
     try {
       s = shardState.acquire();
       SearchContext context =
           SearchRequestProcessor.buildContextForRequest(
-              request, indexState, shardState, s, ProfileResult.newBuilder());
+              request,
+              indexState,
+              shardState,
+              s,
+              Diagnostics.newBuilder(),
+              ProfileResult.newBuilder(),
+              false);
       return func.apply(context);
     } finally {
       if (s != null) {
@@ -483,9 +504,9 @@ public class TimeoutTest extends ServerTestCase {
       List<FacetResult> grpcFacetResults = new ArrayList<>();
       DrillSideways drillS =
           new DrillSidewaysImpl(
-              context.getSearcherAndTaxonomy().searcher,
+              context.getSearcherAndTaxonomy().searcher(),
               context.getIndexState().getFacetsConfig(),
-              context.getSearcherAndTaxonomy().taxonomyReader,
+              context.getSearcherAndTaxonomy().taxonomyReader(),
               Collections.singletonList(getTestFacet()),
               context.getSearcherAndTaxonomy(),
               context.getIndexState(),
@@ -501,7 +522,7 @@ public class TimeoutTest extends ServerTestCase {
       topDocs =
           context
               .getSearcherAndTaxonomy()
-              .searcher
+              .searcher()
               .search(context.getQuery(), manager)
               .getTopDocs();
     }

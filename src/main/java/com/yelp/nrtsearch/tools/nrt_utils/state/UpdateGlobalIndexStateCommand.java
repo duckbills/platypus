@@ -18,13 +18,13 @@ package com.yelp.nrtsearch.tools.nrt_utils.state;
 import com.amazonaws.services.s3.AmazonS3;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.protobuf.util.JsonFormat;
-import com.yelp.nrtsearch.server.backup.VersionManager;
 import com.yelp.nrtsearch.server.grpc.GlobalStateInfo;
 import com.yelp.nrtsearch.server.grpc.IndexGlobalState;
-import com.yelp.nrtsearch.server.luceneserver.state.BackendGlobalState;
-import com.yelp.nrtsearch.server.luceneserver.state.StateUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.backend.RemoteStateBackend;
-import com.yelp.nrtsearch.tools.nrt_utils.incremental.IncrementalCommandUtils;
+import com.yelp.nrtsearch.server.remote.RemoteBackend;
+import com.yelp.nrtsearch.server.remote.s3.S3Backend;
+import com.yelp.nrtsearch.server.state.BackendGlobalState;
+import com.yelp.nrtsearch.server.state.StateUtils;
+import com.yelp.nrtsearch.server.utils.TimeStringUtils;
 import java.util.concurrent.Callable;
 import picocli.CommandLine;
 
@@ -59,25 +59,33 @@ public class UpdateGlobalIndexStateCommand implements Callable<Integer> {
 
   @CommandLine.Option(
       names = {"-c", "--credsFile"},
-      description = "File holding AWS credentials, uses default locations if not set")
+      description =
+          "File holding AWS credentials; Will use DefaultCredentialProvider if this is unset.")
   private String credsFile;
 
   @CommandLine.Option(
       names = {"-p", "--credsProfile"},
-      description = "Profile to use from creds file",
+      description = "Profile to use from creds file; Neglected when credsFile is unset.",
       defaultValue = "default")
   private String credsProfile;
 
   @CommandLine.Option(
-      names = {"--setUUID"},
-      description = "If specified, update index UUID to this value")
-  private String uuid;
+      names = {"--setId"},
+      description =
+          "If specified, update index id to this value. Should match format yyyyMMddHHmmssSSS")
+  private String dateTimeString;
 
   @CommandLine.Option(
       names = {"--setStarted"},
       description =
           "Optionally update index started flag for index, valid values: 'true' or 'false'")
   private String started;
+
+  @CommandLine.Option(
+      names = {"--maxRetry"},
+      description = "Maximum number of retry attempts for S3 failed requests",
+      defaultValue = "20")
+  private int maxRetry;
 
   private AmazonS3 s3Client;
 
@@ -87,16 +95,16 @@ public class UpdateGlobalIndexStateCommand implements Callable<Integer> {
   }
 
   @VisibleForTesting
-  static boolean validateParams(String started, String uuid) {
+  static boolean validateParams(String started, String dateTimeString) {
     if (started != null) {
       if (!started.equalsIgnoreCase("true") && !started.equalsIgnoreCase("false")) {
         System.out.println("setStarted must be one of 'true' or 'false'");
         return false;
       }
     }
-    if (uuid != null) {
-      if (!IncrementalCommandUtils.isUUID(uuid)) {
-        System.out.println("Invalid UUID format: " + uuid);
+    if (dateTimeString != null) {
+      if (!TimeStringUtils.isTimeStringMs(dateTimeString)) {
+        System.out.println("Invalid date time format: " + dateTimeString);
         return false;
       }
     }
@@ -105,20 +113,16 @@ public class UpdateGlobalIndexStateCommand implements Callable<Integer> {
 
   @Override
   public Integer call() throws Exception {
-    if (!validateParams(started, uuid)) {
+    if (!validateParams(started, dateTimeString)) {
       return 1;
     }
     if (s3Client == null) {
-      s3Client = StateCommandUtils.createS3Client(bucketName, region, credsFile, credsProfile);
+      s3Client =
+          StateCommandUtils.createS3Client(bucketName, region, credsFile, credsProfile, maxRetry);
     }
-    VersionManager versionManager = new VersionManager(s3Client, bucketName);
+    S3Backend s3Backend = new S3Backend(bucketName, false, s3Client);
 
-    String resolvedResourceName =
-        StateCommandUtils.getResourceName(
-            versionManager, serviceName, RemoteStateBackend.GLOBAL_STATE_RESOURCE, false);
-    String stateFileContents =
-        StateCommandUtils.getStateFileContents(
-            versionManager, serviceName, resolvedResourceName, StateUtils.GLOBAL_STATE_FILE);
+    String stateFileContents = StateCommandUtils.getGlobalStateFileContents(s3Backend, serviceName);
     if (stateFileContents == null) {
       System.out.println("Could not find cluster global state");
       return 1;
@@ -137,26 +141,23 @@ public class UpdateGlobalIndexStateCommand implements Callable<Integer> {
     IndexGlobalState indexGlobalState = globalStateInfo.getIndicesOrThrow(indexName);
     boolean updated = false;
 
-    if (uuid != null) {
-      String updatedIndexResource = BackendGlobalState.getUniqueIndexName(indexName, uuid);
-      String updatedIndexDataResource =
-          IncrementalCommandUtils.getIndexDataResource(updatedIndexResource);
-      String updatedIndexStateResource =
-          StateCommandUtils.getIndexStateResource(updatedIndexResource);
-      long dataVersion =
-          versionManager.getLatestVersionNumber(serviceName, updatedIndexDataResource);
-      long stateVersion =
-          versionManager.getLatestVersionNumber(serviceName, updatedIndexStateResource);
-      if (dataVersion == -1 || stateVersion == -1) {
-        System.out.println("Missing blessed resources for new uuid: " + uuid);
-        System.out.println(
-            "Data resource: " + updatedIndexDataResource + ", version: " + dataVersion);
-        System.out.println(
-            "State resource: " + updatedIndexStateResource + ", version: " + stateVersion);
+    if (dateTimeString != null) {
+      String updatedIndexResource =
+          BackendGlobalState.getUniqueIndexName(indexName, dateTimeString);
+      boolean dataExists =
+          s3Backend.exists(
+              serviceName, updatedIndexResource, RemoteBackend.IndexResourceType.POINT_STATE);
+      boolean stateExists =
+          s3Backend.exists(
+              serviceName, updatedIndexResource, RemoteBackend.IndexResourceType.INDEX_STATE);
+      if (!dataExists || !stateExists) {
+        System.out.println("Missing blessed resources for new index id: " + dateTimeString);
+        System.out.println("Data resource: " + updatedIndexResource + ", exists: " + dataExists);
+        System.out.println("State resource: " + updatedIndexResource + ", exists: " + stateExists);
         return 1;
       }
 
-      indexGlobalState = indexGlobalState.toBuilder().setId(uuid).build();
+      indexGlobalState = indexGlobalState.toBuilder().setId(dateTimeString).build();
       updated = true;
     }
 
@@ -173,12 +174,7 @@ public class UpdateGlobalIndexStateCommand implements Callable<Integer> {
       GlobalStateInfo updatedGlobalStateInfo = newStateBuilder.build();
       String stateStr = JsonFormat.printer().print(updatedGlobalStateInfo);
       byte[] stateBytes = StateUtils.toUTF8(stateStr);
-      StateCommandUtils.writeStateDataToBackend(
-          versionManager,
-          serviceName,
-          resolvedResourceName,
-          StateUtils.GLOBAL_STATE_FILE,
-          stateBytes);
+      s3Backend.uploadGlobalState(serviceName, stateBytes);
 
       System.out.println("Updated global state: " + stateStr);
     } else {

@@ -17,7 +17,7 @@ package com.yelp.nrtsearch.server.grpc;
 
 import static org.junit.Assert.assertEquals;
 
-import com.yelp.nrtsearch.server.luceneserver.ServerTestCase;
+import com.yelp.nrtsearch.server.ServerTestCase;
 import io.grpc.testing.GrpcCleanupRule;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -49,7 +49,7 @@ public class MultiSegmentTest extends ServerTestCase {
 
   @Override
   public void initIndex(String name) throws Exception {
-    IndexWriter writer = getGlobalState().getIndex(name).getShard(0).writer;
+    IndexWriter writer = getGlobalState().getIndexOrThrow(name).getShard(0).writer;
     // don't want any merges for these tests
     writer.getConfig().setMergePolicy(NoMergePolicy.INSTANCE);
 
@@ -96,14 +96,14 @@ public class MultiSegmentTest extends ServerTestCase {
   public void testNumSegments() throws Exception {
     SearcherTaxonomyManager.SearcherAndTaxonomy s = null;
     try {
-      s = getGlobalState().getIndex(TEST_INDEX).getShard(0).acquire();
-      assertEquals(NUM_DOCS / SEGMENT_CHUNK, s.searcher.getIndexReader().leaves().size());
-      for (LeafReaderContext context : s.searcher.getIndexReader().leaves()) {
+      s = getGlobalState().getIndexOrThrow(TEST_INDEX).getShard(0).acquire();
+      assertEquals(NUM_DOCS / SEGMENT_CHUNK, s.searcher().getIndexReader().leaves().size());
+      for (LeafReaderContext context : s.searcher().getIndexReader().leaves()) {
         assertEquals(SEGMENT_CHUNK, context.reader().maxDoc());
       }
     } finally {
       if (s != null) {
-        getGlobalState().getIndex(TEST_INDEX).getShard(0).release(s);
+        getGlobalState().getIndexOrThrow(TEST_INDEX).getShard(0).release(s);
       }
     }
   }
@@ -169,6 +169,56 @@ public class MultiSegmentTest extends ServerTestCase {
 
         start += (i + 1);
       }
+    }
+  }
+
+  @Test
+  public void testExplain() {
+    SearchResponse searchResponse =
+        getGrpcServer()
+            .getBlockingStub()
+            .search(
+                SearchRequest.newBuilder()
+                    .setIndexName(TEST_INDEX)
+                    .setStartHit(0)
+                    .setTopHits(NUM_DOCS)
+                    .addRetrieveFields("doc_id")
+                    .addRetrieveFields("int_score")
+                    .addRetrieveFields("int_field")
+                    .setQuery(
+                        Query.newBuilder()
+                            .setFunctionScoreQuery(
+                                FunctionScoreQuery.newBuilder()
+                                    .setScript(
+                                        Script.newBuilder()
+                                            .setLang("js")
+                                            .setSource("int_score")
+                                            .build())
+                                    .setQuery(
+                                        Query.newBuilder()
+                                            .setRangeQuery(
+                                                RangeQuery.newBuilder()
+                                                    .setField("int_field")
+                                                    .setLower(String.valueOf(0))
+                                                    .setUpper(String.valueOf(NUM_DOCS))
+                                                    .build())
+                                            .build())
+                                    .build())
+                            .build())
+                    .setExplain(true)
+                    .build());
+    for (int i = 0; i < searchResponse.getHitsCount(); i++) {
+      var hit = searchResponse.getHits(i);
+      int fieldVal = hit.getFieldsOrThrow("int_field").getFieldValue(0).getIntValue();
+      assertEquals(i, fieldVal);
+      var explain = hit.getExplain();
+      var expectedExplain =
+          String.format(
+              "%d.0 = weight(FunctionScoreQuery(IndexOrDocValuesQuery(indexQuery=int_field:[0 TO 100], dvQuery=int_field:[0 TO 100]), scored by expr(int_score))), result of:\n"
+                  + "  %<d.0 = int_score, computed from:\n"
+                  + "    %<d.0 = double(int_score)",
+              NUM_DOCS - i);
+      assertEquals(expectedExplain, explain.trim());
     }
   }
 }

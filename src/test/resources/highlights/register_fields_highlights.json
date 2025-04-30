@@ -4,6 +4,7 @@
     {
       "name": "doc_id",
       "type": "ATOM",
+      "search": true,
       "storeDocValues": true
     },
     {
@@ -11,7 +12,6 @@
       "type": "TEXT",
       "search": true,
       "store": true,
-      "tokenize": true,
       "storeDocValues": true,
       "termVectors": "TERMS_POSITIONS_OFFSETS",
       "childFields": [
@@ -19,7 +19,6 @@
           "name": "no_search",
           "type": "TEXT",
           "store": true,
-          "tokenize": true,
           "storeDocValues": true
         },
         {
@@ -27,7 +26,6 @@
           "type": "TEXT",
           "search": true,
           "store": false,
-          "tokenize": true,
           "storeDocValues": true,
           "termVectors": "TERMS_POSITIONS_OFFSETS"
         },
@@ -36,11 +34,35 @@
           "type": "TEXT",
           "search": true,
           "store": true,
-          "tokenize": true,
           "storeDocValues": true,
           "termVectors": "TERMS_POSITIONS"
         }
       ]
+    },
+    {
+      "name": "comment2",
+      "type": "TEXT",
+      "search": true,
+      "store": true,
+      "storeDocValues": true,
+      "termVectors": "TERMS_POSITIONS_OFFSETS"
+    },
+    {
+      "name": "comment_multivalue",
+      "type": "TEXT",
+      "search": true,
+      "store": true,
+      "storeDocValues": true,
+      "multiValued": true,
+      "termVectors": "TERMS_POSITIONS_OFFSETS"
+    },
+    {
+      "name": "boundary_scanner_field",
+      "type": "TEXT",
+      "search": true,
+      "store": true,
+      "storeDocValues": true,
+      "termVectors": "TERMS_POSITIONS_OFFSETS"
     }
   ]
 }

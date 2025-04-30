@@ -1,0 +1,43 @@
+{
+  "indexName": "test_index",
+  "field": [
+    {
+      "name": "doc_id",
+      "type": "_ID",
+      "search": true,
+      "storeDocValues": true
+    },
+    {
+      "name": "text_field",
+      "type": "TEXT",
+      "search": true,
+      "multiValued": true,
+      "storeDocValues": true,
+      "childFields": [
+        {
+          "name": "not_searchable",
+          "type": "TEXT",
+          "multiValued": true
+        },
+        {
+          "name": "no_positions",
+          "type": "TEXT",
+          "search": true,
+          "indexOptions": "DOCS_FREQS",
+          "multiValued": true
+        },
+        {
+          "name": "atom_field",
+          "type": "ATOM",
+          "search": true,
+          "multiValued": true
+        }
+      ]
+    },
+    {
+      "name": "double_field",
+      "type": "DOUBLE",
+      "storeDocValues": true
+    }
+  ]
+}

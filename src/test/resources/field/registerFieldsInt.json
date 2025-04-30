@@ -6,7 +6,61 @@
             "type": "INT",
             "storeDocValues": true,
             "multiValued": false,
-            "search": true
+            "search": true,
+            "childFields": [
+                {
+                    "name": "dv",
+                    "type": "INT",
+                    "storeDocValues": true
+                },
+                {
+                    "name": "search",
+                    "type": "INT",
+                    "search": true
+                },
+                {
+                    "name": "none",
+                    "type": "INT"
+                },
+                {
+                    "name": "mv_dv",
+                    "type": "INT",
+                    "multiValued": true,
+                    "storeDocValues": true
+                },
+                {
+                    "name": "mv_search",
+                    "type": "INT",
+                    "multiValued": true,
+                    "search": true
+                }
+            ]
+        },
+        {
+            "name": "single_stored",
+            "type": "INT",
+            "search": true,
+            "store": true
+        },
+        {
+            "name": "multi_stored",
+            "type": "INT",
+            "search": true,
+            "multiValued": true,
+            "store": true
+        },
+        {
+            "name": "single_none_stored",
+            "type": "INT",
+            "search": true,
+            "store": true
+        },
+        {
+            "name": "multi_none_stored",
+            "type": "INT",
+            "search": true,
+            "multiValued": true,
+            "store": true
         }
     ]
 }

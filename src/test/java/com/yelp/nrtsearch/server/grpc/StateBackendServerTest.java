@@ -20,11 +20,7 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import com.amazonaws.auth.AnonymousAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
-import com.amazonaws.services.s3.transfer.TransferManager;
-import com.amazonaws.services.s3.transfer.TransferManagerBuilder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -33,29 +29,25 @@ import com.google.protobuf.BoolValue;
 import com.google.protobuf.DoubleValue;
 import com.google.protobuf.Int32Value;
 import com.google.protobuf.StringValue;
+import com.google.protobuf.UInt64Value;
 import com.google.protobuf.util.JsonFormat;
 import com.yelp.nrtsearch.clientlib.Node;
-import com.yelp.nrtsearch.server.backup.BackupDiffManager;
-import com.yelp.nrtsearch.server.backup.ContentDownloader;
-import com.yelp.nrtsearch.server.backup.ContentDownloaderImpl;
-import com.yelp.nrtsearch.server.backup.FileCompressAndUploader;
-import com.yelp.nrtsearch.server.backup.IndexArchiver;
-import com.yelp.nrtsearch.server.backup.TarImpl;
-import com.yelp.nrtsearch.server.backup.VersionManager;
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest.MultiValuedField;
-import com.yelp.nrtsearch.server.grpc.LuceneServer.LuceneServerImpl;
-import com.yelp.nrtsearch.server.grpc.LuceneServer.ReplicationServerImpl;
+import com.yelp.nrtsearch.server.grpc.NrtsearchServer.LuceneServerImpl;
+import com.yelp.nrtsearch.server.grpc.NrtsearchServer.ReplicationServerImpl;
 import com.yelp.nrtsearch.server.grpc.SearchResponse.Hit;
-import com.yelp.nrtsearch.server.luceneserver.index.ImmutableIndexState;
-import com.yelp.nrtsearch.server.luceneserver.script.js.JsScriptEngine;
-import io.findify.s3mock.S3Mock;
+import com.yelp.nrtsearch.server.index.ImmutableIndexState;
+import com.yelp.nrtsearch.server.remote.RemoteBackend;
+import com.yelp.nrtsearch.server.remote.s3.S3Backend;
+import com.yelp.nrtsearch.server.script.js.JsScriptEngine;
+import com.yelp.nrtsearch.test_utils.AmazonS3Provider;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
-import io.prometheus.client.CollectorRegistry;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -81,31 +73,27 @@ import org.junit.rules.TemporaryFolder;
 public class StateBackendServerTest {
 
   @Rule public final TemporaryFolder folder = new TemporaryFolder();
+  @Rule public final AmazonS3Provider s3Provider = new AmazonS3Provider(TEST_BUCKET);
 
   private Server primaryServer;
   private Server primaryReplicationServer;
-  private LuceneServerClient primaryClient;
+  private NrtsearchClient primaryClient;
 
   private Server replicaServer;
   private Server replicaReplicationServer;
-  private LuceneServerClient replicaClient;
+  private NrtsearchClient replicaClient;
 
   private static final String TEST_BUCKET = "state-backend-server-test";
   private static final String TEST_SERVICE_NAME = "state-backend-test-service";
-  private S3Mock api;
-  private IndexArchiver archiverPrimary;
-  private IndexArchiver archiverReplica;
+  private RemoteBackend remoteBackendPrimary;
+  private RemoteBackend remoteBackendReplica;
 
   @After
   public void cleanup() throws InterruptedException {
     cleanupPrimary();
     cleanupReplica();
-    if (api != null) {
-      api.shutdown();
-      api = null;
-      archiverPrimary = null;
-      archiverReplica = null;
-    }
+    remoteBackendPrimary = null;
+    remoteBackendReplica = null;
   }
 
   private void cleanupPrimary() {
@@ -160,52 +148,15 @@ public class StateBackendServerTest {
     }
   }
 
-  private void initArchiver() throws IOException {
-    Path s3Directory = folder.newFolder("s3").toPath();
-    Files.createDirectories(getPrimaryArchiveDir());
+  private void initRemote() throws IOException {
     Files.createDirectories(getReplicaIndexDir());
 
-    api = S3Mock.create(8011, s3Directory.toAbsolutePath().toString());
-    api.start();
-    AmazonS3 s3 = new AmazonS3Client(new AnonymousAWSCredentials());
-    s3.setEndpoint("http://127.0.0.1:8011");
-    s3.createBucket(TEST_BUCKET);
-    TransferManager transferManager =
-        TransferManagerBuilder.standard().withS3Client(s3).withShutDownThreadPools(false).build();
-
-    ContentDownloader contentDownloader =
-        new ContentDownloaderImpl(
-            new TarImpl(TarImpl.CompressionMode.LZ4), transferManager, TEST_BUCKET, true);
-    FileCompressAndUploader fileCompressAndUploader =
-        new FileCompressAndUploader(
-            new TarImpl(TarImpl.CompressionMode.LZ4), transferManager, TEST_BUCKET);
-    VersionManager versionManager = new VersionManager(s3, TEST_BUCKET);
-    BackupDiffManager backupDiffManagerPrimary =
-        new BackupDiffManager(
-            contentDownloader, fileCompressAndUploader, versionManager, getPrimaryArchiveDir());
-    archiverPrimary =
-        new IndexArchiver(
-            backupDiffManagerPrimary,
-            fileCompressAndUploader,
-            contentDownloader,
-            versionManager,
-            getPrimaryArchiveDir(),
-            false);
-
-    BackupDiffManager backupDiffManagerReplica =
-        new BackupDiffManager(
-            contentDownloader, fileCompressAndUploader, versionManager, getPrimaryArchiveDir());
-    archiverReplica =
-        new IndexArchiver(
-            backupDiffManagerReplica,
-            fileCompressAndUploader,
-            contentDownloader,
-            versionManager,
-            getReplicaArchiveDir(),
-            false);
+    AmazonS3 s3 = s3Provider.getAmazonS3();
+    remoteBackendPrimary = new S3Backend(TEST_BUCKET, false, s3);
+    remoteBackendReplica = new S3Backend(TEST_BUCKET, false, s3);
   }
 
-  private LuceneServerConfiguration getPrimaryConfig() {
+  private NrtsearchConfig getPrimaryConfig() {
     String configStr =
         String.join(
             "\n",
@@ -213,13 +164,12 @@ public class StateBackendServerTest {
             "serviceName: " + TEST_SERVICE_NAME,
             "stateDir: " + getStateDir(),
             "indexDir: " + getPrimaryIndexDir(),
-            "archiveDirectory: " + getPrimaryArchiveDir(),
             "stateConfig:",
             "  backendType: LOCAL");
-    return new LuceneServerConfiguration(new ByteArrayInputStream(configStr.getBytes()));
+    return new NrtsearchConfig(new ByteArrayInputStream(configStr.getBytes()));
   }
 
-  private LuceneServerConfiguration getPrimaryArchiverConfig() {
+  private NrtsearchConfig getPrimaryRemoteConfig() {
     String configStr =
         String.join(
             "\n",
@@ -227,17 +177,17 @@ public class StateBackendServerTest {
             "serviceName: " + TEST_SERVICE_NAME,
             "stateDir: " + getStateDir(),
             "indexDir: " + getPrimaryIndexDir(),
-            "archiveDirectory: " + getPrimaryArchiveDir(),
-            "backupWithIncArchiver: true",
-            "restoreFromIncArchiver: true",
             "stateConfig:",
             "  backendType: REMOTE",
             "  remote:",
-            "    readOnly: false");
-    return new LuceneServerConfiguration(new ByteArrayInputStream(configStr.getBytes()));
+            "    readOnly: false",
+            "indexStartConfig:",
+            "  mode: PRIMARY",
+            "  dataLocationType: REMOTE");
+    return new NrtsearchConfig(new ByteArrayInputStream(configStr.getBytes()));
   }
 
-  private LuceneServerConfiguration getReplicaConfig() {
+  private NrtsearchConfig getReplicaConfig() {
     String configStr =
         String.join(
             "\n",
@@ -245,14 +195,13 @@ public class StateBackendServerTest {
             "serviceName: " + TEST_SERVICE_NAME,
             "stateDir: " + getStateDir(),
             "indexDir: " + getReplicaIndexDir(),
-            "archiveDirectory: " + getReplicaArchiveDir(),
             "syncInitialNrtPoint: true",
             "stateConfig:",
             "  backendType: LOCAL");
-    return new LuceneServerConfiguration(new ByteArrayInputStream(configStr.getBytes()));
+    return new NrtsearchConfig(new ByteArrayInputStream(configStr.getBytes()));
   }
 
-  private LuceneServerConfiguration getReplicaArchiverConfig() {
+  private NrtsearchConfig getReplicaRemoteConfig() {
     String configStr =
         String.join(
             "\n",
@@ -260,81 +209,80 @@ public class StateBackendServerTest {
             "serviceName: " + TEST_SERVICE_NAME,
             "stateDir: " + getStateDir(),
             "indexDir: " + getReplicaIndexDir(),
-            "archiveDirectory: " + getReplicaArchiveDir(),
             // don't sync on start to make restore testing easier
             "syncInitialNrtPoint: false",
-            "restoreFromIncArchiver: true",
             "stateConfig:",
-            "  backendType: REMOTE");
-    return new LuceneServerConfiguration(new ByteArrayInputStream(configStr.getBytes()));
+            "  backendType: REMOTE",
+            "indexStartConfig:",
+            "  mode: REPLICA",
+            "  dataLocationType: REMOTE");
+    return new NrtsearchConfig(new ByteArrayInputStream(configStr.getBytes()));
   }
 
   private void restartPrimary() throws IOException {
     cleanupPrimary();
     LuceneServerImpl serverImpl =
         new LuceneServerImpl(
-            getPrimaryConfig(), null, null, new CollectorRegistry(), Collections.emptyList());
+            getPrimaryConfig(), null, new PrometheusRegistry(), Collections.emptyList());
 
     primaryReplicationServer =
         ServerBuilder.forPort(0)
-            .addService(new ReplicationServerImpl(serverImpl.getGlobalState()))
+            .addService(new ReplicationServerImpl(serverImpl.getGlobalState(), false))
             .build()
             .start();
     primaryServer = ServerBuilder.forPort(0).addService(serverImpl).build().start();
-    primaryClient = new LuceneServerClient("localhost", primaryServer.getPort());
+    primaryClient = new NrtsearchClient("localhost", primaryServer.getPort());
   }
 
-  private void restartPrimaryWithArchiver() throws IOException {
+  private void restartPrimaryWithRemote() throws IOException {
     cleanupPrimary();
     LuceneServerImpl serverImpl =
         new LuceneServerImpl(
-            getPrimaryArchiverConfig(),
-            null,
-            archiverPrimary,
-            new CollectorRegistry(),
+            getPrimaryRemoteConfig(),
+            remoteBackendPrimary,
+            new PrometheusRegistry(),
             Collections.emptyList());
 
     primaryReplicationServer =
         ServerBuilder.forPort(0)
-            .addService(new ReplicationServerImpl(serverImpl.getGlobalState()))
+            .addService(new ReplicationServerImpl(serverImpl.getGlobalState(), false))
             .build()
             .start();
     primaryServer = ServerBuilder.forPort(0).addService(serverImpl).build().start();
-    primaryClient = new LuceneServerClient("localhost", primaryServer.getPort());
+    primaryClient = new NrtsearchClient("localhost", primaryServer.getPort());
   }
 
   private void restartReplica() throws IOException {
     cleanupReplica();
     LuceneServerImpl serverImpl =
         new LuceneServerImpl(
-            getReplicaConfig(), null, null, new CollectorRegistry(), Collections.emptyList());
+            getReplicaConfig(), null, new PrometheusRegistry(), Collections.emptyList());
 
     replicaReplicationServer =
         ServerBuilder.forPort(0)
-            .addService(new ReplicationServerImpl(serverImpl.getGlobalState()))
+            .addService(new ReplicationServerImpl(serverImpl.getGlobalState(), false))
             .build()
             .start();
     replicaServer = ServerBuilder.forPort(0).addService(serverImpl).build().start();
-    replicaClient = new LuceneServerClient("localhost", replicaServer.getPort());
+    replicaClient = new NrtsearchClient("localhost", replicaServer.getPort());
   }
 
-  private void restartReplicaWithArchiver() throws IOException {
+  private void restartReplicaWithRemote() throws IOException {
     cleanupReplica();
     LuceneServerImpl serverImpl =
         new LuceneServerImpl(
-            getReplicaArchiverConfig(),
-            null,
-            archiverReplica,
-            new CollectorRegistry(),
+            getReplicaRemoteConfig(),
+            remoteBackendReplica,
+            new PrometheusRegistry(),
             Collections.emptyList());
 
     replicaReplicationServer =
         ServerBuilder.forPort(0)
-            .addService(new ReplicationServerImpl(serverImpl.getGlobalState()))
+            .addService(new ReplicationServerImpl(serverImpl.getGlobalState(), false))
             .build()
             .start();
     replicaServer = ServerBuilder.forPort(0).addService(serverImpl).build().start();
-    replicaClient = new LuceneServerClient("localhost", replicaServer.getPort());
+    replicaClient = new NrtsearchClient("localhost", replicaServer.getPort());
   }
 
   private Path getStateDir() {
@@ -345,16 +293,8 @@ public class StateBackendServerTest {
     return Paths.get(folder.getRoot().toString(), "primary_index_dir");
   }
 
-  private Path getPrimaryArchiveDir() {
-    return Paths.get(folder.getRoot().toString(), "primary_archive_dir");
-  }
-
   private Path getReplicaIndexDir() {
     return Paths.get(folder.getRoot().toString(), "replica_index_dir");
-  }
-
-  private Path getReplicaArchiveDir() {
-    return Paths.get(folder.getRoot().toString(), "replica_archive_dir");
   }
 
   private void initPrimary() throws IOException {
@@ -364,8 +304,8 @@ public class StateBackendServerTest {
     assertTrue(response.getIndicesResponseList().isEmpty());
   }
 
-  private void initPrimaryWithArchiver() throws IOException {
-    restartPrimaryWithArchiver();
+  private void initPrimaryWithRemote() throws IOException {
+    restartPrimaryWithRemote();
     IndicesResponse response =
         primaryClient.getBlockingStub().indices(IndicesRequest.newBuilder().build());
     assertTrue(response.getIndicesResponseList().isEmpty());
@@ -409,7 +349,7 @@ public class StateBackendServerTest {
             FieldDefRequest.newBuilder().setIndexName("test_index").addAllField(fields2).build());
   }
 
-  private IndexStateInfo getIndexState(String indexName, LuceneServerClient client)
+  private IndexStateInfo getIndexState(String indexName, NrtsearchClient client)
       throws IOException {
     StateResponse response =
         client.getBlockingStub().state(StateRequest.newBuilder().setIndexName(indexName).build());
@@ -501,7 +441,7 @@ public class StateBackendServerTest {
   private final List<String> fieldList = List.of("id", "field1", "field2", "field3", "field4");
   private final List<String> subFieldList = List.of("id", "field1", "field2");
 
-  private void verifyDocs(int expectedCount, LuceneServerClient client) {
+  private void verifyDocs(int expectedCount, NrtsearchClient client) {
     SearchResponse response =
         client
             .getBlockingStub()
@@ -544,7 +484,7 @@ public class StateBackendServerTest {
     }
   }
 
-  private void verifySubFieldDocs(int expectedCount, LuceneServerClient client) {
+  private void verifySubFieldDocs(int expectedCount, NrtsearchClient client) {
     SearchResponse response =
         client
             .getBlockingStub()
@@ -624,11 +564,11 @@ public class StateBackendServerTest {
     return response.get();
   }
 
-  private StartIndexResponse startIndex(LuceneServerClient client, Mode mode) {
+  private StartIndexResponse startIndex(NrtsearchClient client, Mode mode) {
     return startIndex(client, mode, 0);
   }
 
-  private StartIndexResponse startIndex(LuceneServerClient client, Mode mode, long primaryGen) {
+  private StartIndexResponse startIndex(NrtsearchClient client, Mode mode, long primaryGen) {
     if (mode.equals(Mode.REPLICA)) {
       return client
           .getBlockingStub()
@@ -649,7 +589,7 @@ public class StateBackendServerTest {
   }
 
   private StartIndexResponse startIndexWithRestore(
-      LuceneServerClient client, Mode mode, boolean deleteExistingData) {
+      NrtsearchClient client, Mode mode, boolean deleteExistingData) {
     if (mode.equals(Mode.REPLICA)) {
       return client
           .getBlockingStub()
@@ -683,7 +623,7 @@ public class StateBackendServerTest {
     }
   }
 
-  private DummyResponse stopIndex(LuceneServerClient client) {
+  private DummyResponse stopIndex(NrtsearchClient client) {
     DummyResponse response =
         client
             .getBlockingStub()
@@ -692,13 +632,13 @@ public class StateBackendServerTest {
     return response;
   }
 
-  private CommitResponse commitIndex(LuceneServerClient client) {
+  private CommitResponse commitIndex(NrtsearchClient client) {
     return client
         .getBlockingStub()
         .commit(CommitRequest.newBuilder().setIndexName("test_index").build());
   }
 
-  private RefreshResponse refreshIndex(LuceneServerClient client) {
+  private RefreshResponse refreshIndex(NrtsearchClient client) {
     return client
         .getBlockingStub()
         .refresh(RefreshRequest.newBuilder().setIndexName("test_index").build());
@@ -770,8 +710,7 @@ public class StateBackendServerTest {
                             .build())
                     .build());
     IndexSettings expectedSettings =
-        ImmutableIndexState.DEFAULT_INDEX_SETTINGS
-            .toBuilder()
+        ImmutableIndexState.DEFAULT_INDEX_SETTINGS.toBuilder()
             .setNrtCachingDirectoryMaxSizeMB(DoubleValue.newBuilder().setValue(120.0).build())
             .setNrtCachingDirectoryMaxMergeSizeMB(DoubleValue.newBuilder().setValue(60.0).build())
             .setIndexMergeSchedulerAutoThrottle(BoolValue.newBuilder().setValue(true).build())
@@ -801,8 +740,7 @@ public class StateBackendServerTest {
                             .build())
                     .build());
     IndexSettings expectedSettings =
-        ImmutableIndexState.DEFAULT_INDEX_SETTINGS
-            .toBuilder()
+        ImmutableIndexState.DEFAULT_INDEX_SETTINGS.toBuilder()
             .setNrtCachingDirectoryMaxSizeMB(DoubleValue.newBuilder().setValue(120.0).build())
             .setNrtCachingDirectoryMaxMergeSizeMB(DoubleValue.newBuilder().setValue(60.0).build())
             .setIndexMergeSchedulerAutoThrottle(BoolValue.newBuilder().setValue(true).build())
@@ -837,6 +775,8 @@ public class StateBackendServerTest {
                         IndexLiveSettings.newBuilder()
                             .setDefaultTerminateAfter(
                                 Int32Value.newBuilder().setValue(1000).build())
+                            .setDefaultTerminateAfterMaxRecallCount(
+                                Int32Value.newBuilder().setValue(1000).build())
                             .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
                             .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
                             .setDefaultSearchTimeoutSec(
@@ -844,9 +784,9 @@ public class StateBackendServerTest {
                             .build())
                     .build());
     IndexLiveSettings expectedSettings =
-        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS
-            .toBuilder()
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
             .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(1000).build())
+            .setDefaultTerminateAfterMaxRecallCount(Int32Value.newBuilder().setValue(1000).build())
             .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
             .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
             .setDefaultSearchTimeoutSec(DoubleValue.newBuilder().setValue(5.1).build())
@@ -876,8 +816,7 @@ public class StateBackendServerTest {
                             .build())
                     .build());
     IndexLiveSettings expectedSettings =
-        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS
-            .toBuilder()
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
             .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(1000).build())
             .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
             .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
@@ -891,6 +830,264 @@ public class StateBackendServerTest {
             .getBlockingStub()
             .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
     assertEquals(expectedSettings, response.getLiveSettings());
+  }
+
+  @Test
+  public void testSetLocalIndexLiveSettings() throws IOException {
+    initPrimary();
+    createIndex();
+    LiveSettingsV2Response response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLiveSettings(
+                        IndexLiveSettings.newBuilder()
+                            .setDefaultTerminateAfter(
+                                Int32Value.newBuilder().setValue(1000).build())
+                            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+                            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+                            .setDefaultSearchTimeoutSec(
+                                DoubleValue.newBuilder().setValue(5.1).build())
+                            .build())
+                    .setLocal(true)
+                    .build());
+    // live settings with local
+    IndexLiveSettings expectedSettings =
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
+            .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(1000).build())
+            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+            .setDefaultSearchTimeoutSec(DoubleValue.newBuilder().setValue(5.1).build())
+            .build();
+    assertEquals(expectedSettings, response.getLiveSettings());
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLocal(true)
+                    .build());
+    assertEquals(expectedSettings, response.getLiveSettings());
+
+    // live settings without local
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+  }
+
+  @Test
+  public void testUpdateLocalIndexLiveSettings() throws IOException {
+    initPrimary();
+    createIndex();
+    LiveSettingsV2Response response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLiveSettings(
+                        IndexLiveSettings.newBuilder()
+                            .setDefaultTerminateAfter(
+                                Int32Value.newBuilder().setValue(1000).build())
+                            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+                            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+                            .setDefaultSearchTimeoutSec(
+                                DoubleValue.newBuilder().setValue(5.1).build())
+                            .build())
+                    .setLocal(true)
+                    .build());
+    // live settings with local
+    IndexLiveSettings expectedSettings =
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
+            .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(1000).build())
+            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+            .setDefaultSearchTimeoutSec(DoubleValue.newBuilder().setValue(5.1).build())
+            .build();
+    assertEquals(expectedSettings, response.getLiveSettings());
+
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLiveSettings(
+                        IndexLiveSettings.newBuilder()
+                            .setDefaultTerminateAfter(
+                                Int32Value.newBuilder().setValue(2000).build())
+                            .setSliceMaxDocs(Int32Value.newBuilder().setValue(500).build())
+                            .build())
+                    .setLocal(true)
+                    .build());
+    // live settings with local
+    expectedSettings =
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
+            .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(2000).build())
+            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+            .setDefaultSearchTimeoutSec(DoubleValue.newBuilder().setValue(5.1).build())
+            .setSliceMaxDocs(Int32Value.newBuilder().setValue(500).build())
+            .build();
+    assertEquals(expectedSettings, response.getLiveSettings());
+
+    // live settings without local
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+  }
+
+  @Test
+  public void testSetLocalIndexLiveSettingsEphemeral() throws IOException {
+    initPrimary();
+    createIndex();
+    LiveSettingsV2Response response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLiveSettings(
+                        IndexLiveSettings.newBuilder()
+                            .setDefaultTerminateAfter(
+                                Int32Value.newBuilder().setValue(1000).build())
+                            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+                            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+                            .setDefaultSearchTimeoutSec(
+                                DoubleValue.newBuilder().setValue(5.1).build())
+                            .build())
+                    .setLocal(true)
+                    .build());
+    // live settings with local
+    IndexLiveSettings expectedSettings =
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
+            .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(1000).build())
+            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+            .setDefaultSearchTimeoutSec(DoubleValue.newBuilder().setValue(5.1).build())
+            .build();
+    assertEquals(expectedSettings, response.getLiveSettings());
+
+    // live settings without local
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+
+    restartPrimary();
+
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLocal(true)
+                    .build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+  }
+
+  @Test
+  public void testSetLocalIndexLiveSettingsReplica() throws IOException {
+    initPrimary();
+    createIndexWithFields();
+    startIndex(primaryClient, Mode.PRIMARY);
+
+    restartReplica();
+    startIndex(replicaClient, Mode.REPLICA);
+
+    LiveSettingsV2Response response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+
+    response =
+        replicaClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+
+    response =
+        replicaClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLiveSettings(
+                        IndexLiveSettings.newBuilder()
+                            .setDefaultTerminateAfter(
+                                Int32Value.newBuilder().setValue(1000).build())
+                            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+                            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+                            .setDefaultSearchTimeoutSec(
+                                DoubleValue.newBuilder().setValue(5.1).build())
+                            .build())
+                    .setLocal(true)
+                    .build());
+    // live settings with local
+    IndexLiveSettings expectedSettings =
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
+            .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(1000).build())
+            .setSegmentsPerTier(Int32Value.newBuilder().setValue(4).build())
+            .setSliceMaxSegments(Int32Value.newBuilder().setValue(50).build())
+            .setDefaultSearchTimeoutSec(DoubleValue.newBuilder().setValue(5.1).build())
+            .build();
+    assertEquals(expectedSettings, response.getLiveSettings());
+
+    // live settings without local
+    response =
+        replicaClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+
+    // primary unaffected
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(LiveSettingsV2Request.newBuilder().setIndexName("test_index").build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
+    response =
+        primaryClient
+            .getBlockingStub()
+            .liveSettingsV2(
+                LiveSettingsV2Request.newBuilder()
+                    .setIndexName("test_index")
+                    .setLocal(true)
+                    .build());
+    assertEquals(ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS, response.getLiveSettings());
   }
 
   @Test
@@ -1057,9 +1254,7 @@ public class StateBackendServerTest {
       fail();
     } catch (StatusRuntimeException e) {
       assertEquals(Status.ALREADY_EXISTS.getCode(), e.getStatus().getCode());
-      assertEquals(
-          "ALREADY_EXISTS: invalid indexName: test_index\nIllegalArgumentException()",
-          e.getMessage());
+      assertEquals("ALREADY_EXISTS: Index test_index already exists", e.getMessage());
     }
   }
 
@@ -1258,7 +1453,7 @@ public class StateBackendServerTest {
       fail();
     } catch (StatusRuntimeException e) {
       assertEquals(
-          "INVALID_ARGUMENT: error while trying to start index: test_index\nIndex test_index is already started",
+          "INTERNAL: Error handling startIndex request\nIndex test_index is already started",
           e.getMessage());
     }
   }
@@ -1418,8 +1613,7 @@ public class StateBackendServerTest {
 
     SettingsResponse response = primaryClient.getBlockingStub().settings(request);
     IndexSettings expectedSettings =
-        ImmutableIndexState.DEFAULT_INDEX_SETTINGS
-            .toBuilder()
+        ImmutableIndexState.DEFAULT_INDEX_SETTINGS.toBuilder()
             .setNrtCachingDirectoryMaxSizeMB(DoubleValue.newBuilder().setValue(101.0).build())
             .setNrtCachingDirectoryMaxMergeSizeMB(DoubleValue.newBuilder().setValue(51.0).build())
             .setIndexSort(
@@ -1456,6 +1650,7 @@ public class StateBackendServerTest {
             .setDefaultSearchTimeoutSec(13.0)
             .setDefaultSearchTimeoutCheckEvery(500)
             .setDefaultTerminateAfter(5000)
+            .setDefaultTerminateAfterMaxRecallCount(6000)
             .build();
 
     LiveSettingsResponse response = primaryClient.getBlockingStub().liveSettings(request);
@@ -1474,6 +1669,11 @@ public class StateBackendServerTest {
             .setDefaultSearchTimeoutSec(DoubleValue.newBuilder().setValue(13.0).build())
             .setDefaultSearchTimeoutCheckEvery(Int32Value.newBuilder().setValue(500).build())
             .setDefaultTerminateAfter(Int32Value.newBuilder().setValue(5000).build())
+            .setDefaultTerminateAfterMaxRecallCount(Int32Value.newBuilder().setValue(6000).build())
+            .setMaxMergePreCopyDurationSec(UInt64Value.newBuilder().setValue(0))
+            .setVerboseMetrics(BoolValue.newBuilder().setValue(false).build())
+            .setParallelFetchByField(BoolValue.newBuilder().setValue(false).build())
+            .setParallelFetchChunkSize(Int32Value.newBuilder().setValue(50).build())
             .build();
 
     IndexLiveSettings.Builder builder = IndexLiveSettings.newBuilder();
@@ -1501,8 +1701,7 @@ public class StateBackendServerTest {
 
     LiveSettingsResponse response = primaryClient.getBlockingStub().liveSettings(request);
     IndexLiveSettings expectedSettings =
-        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS
-            .toBuilder()
+        ImmutableIndexState.DEFAULT_INDEX_LIVE_SETTINGS.toBuilder()
             .setMaxRefreshSec(DoubleValue.newBuilder().setValue(30.0).build())
             .setMaxSearcherAgeSec(DoubleValue.newBuilder().setValue(120.0).build())
             .setIndexRamBufferSizeMB(DoubleValue.newBuilder().setValue(128.0).build())
@@ -1519,15 +1718,15 @@ public class StateBackendServerTest {
   }
 
   @Test
-  public void testStartServerWithArchiver() throws IOException {
-    initArchiver();
-    initPrimaryWithArchiver();
+  public void testStartServerWithRemote() throws IOException {
+    initRemote();
+    initPrimaryWithRemote();
   }
 
   @Test
   public void testStartWithRestore() throws Exception {
-    initArchiver();
-    initPrimaryWithArchiver();
+    initRemote();
+    initPrimaryWithRemote();
     createIndexWithFields();
     startIndex(primaryClient, Mode.PRIMARY);
     addDocs(docs1.stream());
@@ -1537,15 +1736,15 @@ public class StateBackendServerTest {
 
     stopIndex(primaryClient);
 
-    restartPrimaryWithArchiver();
+    restartPrimaryWithRemote();
     startIndexWithRestore(primaryClient, Mode.PRIMARY, true);
     verifyDocs(1, primaryClient);
   }
 
   @Test
   public void testStartRestoreNoCommit() throws Exception {
-    initArchiver();
-    initPrimaryWithArchiver();
+    initRemote();
+    initPrimaryWithRemote();
     createIndexWithFields();
     startIndexWithRestore(primaryClient, Mode.PRIMARY, false);
     addDocs(docs1.stream());
@@ -1555,15 +1754,15 @@ public class StateBackendServerTest {
 
     stopIndex(primaryClient);
 
-    restartPrimaryWithArchiver();
+    restartPrimaryWithRemote();
     startIndexWithRestore(primaryClient, Mode.PRIMARY, true);
     verifyDocs(1, primaryClient);
   }
 
   @Test
   public void testReplicaRestore() throws Exception {
-    initArchiver();
-    initPrimaryWithArchiver();
+    initRemote();
+    initPrimaryWithRemote();
     createIndexWithFields();
     startIndex(primaryClient, Mode.PRIMARY);
     addDocs(docs1.stream());
@@ -1573,15 +1772,15 @@ public class StateBackendServerTest {
 
     stopIndex(primaryClient);
 
-    restartReplicaWithArchiver();
+    restartReplicaWithRemote();
     startIndexWithRestore(replicaClient, Mode.REPLICA, true);
     verifyDocs(1, replicaClient);
   }
 
   @Test
   public void testReplicaReDownloadsIndexData() throws Exception {
-    initArchiver();
-    initPrimaryWithArchiver();
+    initRemote();
+    initPrimaryWithRemote();
     createIndexWithFields();
     startIndex(primaryClient, Mode.PRIMARY);
     addDocs(docs1.stream());
@@ -1589,7 +1788,7 @@ public class StateBackendServerTest {
     refreshIndex(primaryClient);
     verifyDocs(1, primaryClient);
 
-    restartReplicaWithArchiver();
+    restartReplicaWithRemote();
     startIndexWithRestore(replicaClient, Mode.REPLICA, true);
     verifyDocs(1, replicaClient);
     stopIndex(replicaClient);
@@ -1607,15 +1806,15 @@ public class StateBackendServerTest {
 
   @Test
   public void testReplicaRestoreSchemaChange() throws Exception {
-    initArchiver();
-    initPrimaryWithArchiver();
+    initRemote();
+    initPrimaryWithRemote();
     createIndex();
     primaryClient
         .getBlockingStub()
         .registerFields(
             FieldDefRequest.newBuilder().setIndexName("test_index").addAllField(fields1).build());
 
-    restartReplicaWithArchiver();
+    restartReplicaWithRemote();
 
     primaryClient
         .getBlockingStub()
@@ -1633,16 +1832,16 @@ public class StateBackendServerTest {
     verifySubFieldDocs(3, replicaClient);
 
     stopIndex(replicaClient);
-    restartReplicaWithArchiver();
+    restartReplicaWithRemote();
     startIndexWithRestore(replicaClient, Mode.REPLICA, true);
     verifyDocs(3, replicaClient);
   }
 
   @Test
   public void testStartReplicaNoGlobalState() throws IOException {
-    initArchiver();
+    initRemote();
     try {
-      restartReplicaWithArchiver();
+      restartReplicaWithRemote();
       fail();
     } catch (IllegalStateException e) {
       assertEquals("Cannot update remote state when configured as read only", e.getMessage());
@@ -1651,8 +1850,8 @@ public class StateBackendServerTest {
 
   @Test
   public void testAutoPrimaryGeneration() throws Exception {
-    initArchiver();
-    initPrimaryWithArchiver();
+    initRemote();
+    initPrimaryWithRemote();
     createIndexWithFields();
     startIndex(primaryClient, Mode.PRIMARY, -1);
     addDocs(docs1.stream());
@@ -1662,7 +1861,7 @@ public class StateBackendServerTest {
     stopIndex(primaryClient);
     cleanupPrimary();
 
-    restartReplicaWithArchiver();
+    restartReplicaWithRemote();
     replicaClient
         .getBlockingStub()
         .startIndex(
@@ -1682,7 +1881,7 @@ public class StateBackendServerTest {
 
     verifyDocs(1, replicaClient);
 
-    restartPrimaryWithArchiver();
+    restartPrimaryWithRemote();
     startIndex(primaryClient, Mode.PRIMARY, -1);
     addDocs(docs2.stream());
     commitIndex(primaryClient);
@@ -1692,7 +1891,7 @@ public class StateBackendServerTest {
     cleanupPrimary();
     stopIndex(replicaClient);
 
-    restartReplicaWithArchiver();
+    restartReplicaWithRemote();
     replicaClient
         .getBlockingStub()
         .startIndex(
@@ -1711,14 +1910,14 @@ public class StateBackendServerTest {
     verifyDocs(2, replicaClient);
     stopIndex(replicaClient);
 
-    restartPrimaryWithArchiver();
+    restartPrimaryWithRemote();
     startIndex(primaryClient, Mode.PRIMARY, -1);
     addDocs(docs3.stream());
     commitIndex(primaryClient);
     refreshIndex(primaryClient);
     verifyDocs(3, primaryClient);
 
-    restartReplicaWithArchiver();
+    restartReplicaWithRemote();
     replicaClient
         .getBlockingStub()
         .startIndex(

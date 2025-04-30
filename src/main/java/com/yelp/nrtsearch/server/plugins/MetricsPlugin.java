@@ -15,7 +15,7 @@
  */
 package com.yelp.nrtsearch.server.plugins;
 
-import io.prometheus.client.CollectorRegistry;
+import io.prometheus.metrics.model.registry.PrometheusRegistry;
 
 /**
  * Plugin interface that allows plugin to register their prometheus metrics in Nrtsearch prometheus
@@ -23,6 +23,8 @@ import io.prometheus.client.CollectorRegistry;
  */
 public interface MetricsPlugin {
 
-  /** @param collectorRegistry Nrtsearch Prometheus collector registry. */
-  void registerMetrics(CollectorRegistry collectorRegistry);
+  /**
+   * @param prometheusRegistry Nrtsearch Prometheus collector registry.
+   */
+  void registerMetrics(PrometheusRegistry prometheusRegistry);
 }

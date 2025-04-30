@@ -15,13 +15,21 @@
  */
 package com.yelp.nrtsearch.tools.nrt_utils;
 
-import com.yelp.nrtsearch.tools.nrt_utils.incremental.DeleteIncrementalSnapshotsCommand;
-import com.yelp.nrtsearch.tools.nrt_utils.incremental.IncrementalDataCleanupCommand;
-import com.yelp.nrtsearch.tools.nrt_utils.incremental.ListIncrementalSnapshotsCommand;
-import com.yelp.nrtsearch.tools.nrt_utils.incremental.RestoreIncrementalCommand;
-import com.yelp.nrtsearch.tools.nrt_utils.incremental.SnapshotIncrementalCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.backup.CleanupSnapshotsCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.backup.ListSnapshotsCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.backup.RestoreCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.backup.SnapshotCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.cleanup.CleanupDataCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.legacy.incremental.DeleteIncrementalSnapshotsCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.legacy.incremental.IncrementalDataCleanupCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.legacy.incremental.ListIncrementalSnapshotsCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.legacy.incremental.RestoreIncrementalCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.legacy.incremental.SnapshotIncrementalCommand;
 import com.yelp.nrtsearch.tools.nrt_utils.state.GetRemoteStateCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.state.GetResourceVersionCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.state.ListResourceVersions;
 import com.yelp.nrtsearch.tools.nrt_utils.state.PutRemoteStateCommand;
+import com.yelp.nrtsearch.tools.nrt_utils.state.SetResourceVersionCommand;
 import com.yelp.nrtsearch.tools.nrt_utils.state.UpdateGlobalIndexStateCommand;
 import picocli.CommandLine;
 
@@ -29,12 +37,20 @@ import picocli.CommandLine;
     name = "nrt_utils",
     synopsisSubcommandLabel = "COMMAND",
     subcommands = {
+      CleanupDataCommand.class,
+      CleanupSnapshotsCommand.class,
       DeleteIncrementalSnapshotsCommand.class,
       GetRemoteStateCommand.class,
+      GetResourceVersionCommand.class,
       IncrementalDataCleanupCommand.class,
       ListIncrementalSnapshotsCommand.class,
+      ListResourceVersions.class,
+      ListSnapshotsCommand.class,
       PutRemoteStateCommand.class,
+      RestoreCommand.class,
       RestoreIncrementalCommand.class,
+      SetResourceVersionCommand.class,
+      SnapshotCommand.class,
       SnapshotIncrementalCommand.class,
       UpdateGlobalIndexStateCommand.class,
       CommandLine.HelpCommand.class

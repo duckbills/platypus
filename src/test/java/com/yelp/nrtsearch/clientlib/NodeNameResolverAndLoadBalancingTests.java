@@ -17,11 +17,11 @@ package com.yelp.nrtsearch.clientlib;
 
 import static com.yelp.nrtsearch.server.grpc.GrpcServer.TEST_INDEX;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yelp.nrtsearch.server.LuceneServerTestConfigurationFactory;
-import com.yelp.nrtsearch.server.config.LuceneServerConfiguration;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
 import com.yelp.nrtsearch.server.grpc.CommitRequest;
 import com.yelp.nrtsearch.server.grpc.CreateIndexRequest;
@@ -29,6 +29,7 @@ import com.yelp.nrtsearch.server.grpc.Field;
 import com.yelp.nrtsearch.server.grpc.FieldDefRequest;
 import com.yelp.nrtsearch.server.grpc.FieldType;
 import com.yelp.nrtsearch.server.grpc.GrpcServer;
+import com.yelp.nrtsearch.server.grpc.HealthCheckRequest;
 import com.yelp.nrtsearch.server.grpc.LuceneServerGrpc;
 import com.yelp.nrtsearch.server.grpc.LuceneServerStubBuilder;
 import com.yelp.nrtsearch.server.grpc.Mode;
@@ -36,7 +37,9 @@ import com.yelp.nrtsearch.server.grpc.RefreshRequest;
 import com.yelp.nrtsearch.server.grpc.SearchRequest;
 import com.yelp.nrtsearch.server.grpc.SearchResponse;
 import com.yelp.nrtsearch.server.grpc.StartIndexRequest;
-import com.yelp.nrtsearch.server.luceneserver.GlobalState;
+import com.yelp.nrtsearch.server.utils.NrtsearchTestConfigurationFactory;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import io.grpc.testing.GrpcCleanupRule;
 import java.io.BufferedWriter;
@@ -72,6 +75,7 @@ public class NodeNameResolverAndLoadBalancingTests {
    * end of test.
    */
   @Rule public final GrpcCleanupRule grpcCleanup = new GrpcCleanupRule();
+
   /**
    * This rule ensures the temporary folder which maintains indexes are cleaned up after each test
    */
@@ -107,18 +111,16 @@ public class NodeNameResolverAndLoadBalancingTests {
   }
 
   private GrpcServer createGrpcServer() throws IOException {
-    LuceneServerConfiguration luceneServerConfiguration =
-        LuceneServerTestConfigurationFactory.getConfig(Mode.STANDALONE, folder.getRoot());
-    GlobalState globalState = GlobalState.createState(luceneServerConfiguration);
+    NrtsearchConfig configuration =
+        NrtsearchTestConfigurationFactory.getConfig(Mode.STANDALONE, folder.getRoot());
     return new GrpcServer(
         grpcCleanup,
-        luceneServerConfiguration,
+        configuration,
         folder,
-        false,
-        globalState,
-        luceneServerConfiguration.getIndexDir(),
+        null,
+        configuration.getIndexDir(),
         TEST_INDEX,
-        luceneServerConfiguration.getPort());
+        configuration.getPort());
   }
 
   private void startIndexAndAddDocuments(GrpcServer server, int id)
@@ -313,6 +315,40 @@ public class NodeNameResolverAndLoadBalancingTests {
     assertEquals(resultCounts.get(SERVER_1_ID).intValue(), requestsToEachServer);
     assertEquals(resultCounts.get(SERVER_2_ID).intValue(), requestsToEachServer);
     assertEquals(resultCounts.get(SERVER_3_ID).intValue(), requestsToEachServer);
+  }
+
+  @Test(timeout = 10000)
+  public void testUnavailableOnMissingFile() throws IOException {
+    try (LuceneServerStubBuilder stubBuilder =
+        new LuceneServerStubBuilder("/invalid_file", OBJECT_MAPPER)) {
+      try {
+        stubBuilder
+            .createBlockingStub()
+            .withDeadlineAfter(10, TimeUnit.SECONDS)
+            .status(HealthCheckRequest.newBuilder().build());
+        fail();
+      } catch (StatusRuntimeException e) {
+        assertEquals(Status.UNAVAILABLE.getCode(), e.getStatus().getCode());
+      }
+    }
+  }
+
+  @Test(timeout = 10000)
+  public void testUnavailableOnEmptyFile() throws IOException {
+    addressesFile = folder.newFile("empty.json");
+    writeNodeAddressFile();
+    try (LuceneServerStubBuilder stubBuilder =
+        new LuceneServerStubBuilder(addressesFile.getAbsolutePath(), OBJECT_MAPPER)) {
+      try {
+        stubBuilder
+            .createBlockingStub()
+            .withDeadlineAfter(10, TimeUnit.SECONDS)
+            .status(HealthCheckRequest.newBuilder().build());
+        fail();
+      } catch (StatusRuntimeException e) {
+        assertEquals(Status.UNAVAILABLE.getCode(), e.getStatus().getCode());
+      }
+    }
   }
 
   /**

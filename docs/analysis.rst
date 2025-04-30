@@ -158,6 +158,8 @@ Available character filters:
 
   * patternreplace
 
+  * mappingV2 - Similar to the ``mapping`` filter, except rules are specified directly in the parameters. See `MappingV2CharFilterFactory <https://github.com/Yelp/nrtsearch/blob/master/src/main/java/com/yelp/nrtsearch/server/analysis/MappingV2CharFilterFactory.java>`_.
+
 Available tokenizers:
 
   * keyword
@@ -168,11 +170,15 @@ Available tokenizers:
 
   * edgengram
 
+  * ngram
+
   * pathhierarchy
 
   * pattern
 
   * simplepatternsplit
+
+  * simplepattern
 
   * classic
 
@@ -381,6 +387,8 @@ Available token filters:
   * swedishLightStem
 
   * synonym
+
+  * synonymV2 - Similar to the ``synonymGraph`` filter, except rules are specified directly in the parameters. See `SynonymV2GraphFilterFactory <https://github.com/Yelp/nrtsearch/blob/master/src/main/java/com/yelp/nrtsearch/server/analysis/SynonymV2GraphFilterFactory.java>`_.
 
   * synonymGraph
 

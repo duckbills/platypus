@@ -17,10 +17,7 @@ package com.yelp.nrtsearch.tools.nrt_utils.state;
 
 import com.amazonaws.services.s3.AmazonS3;
 import com.google.common.annotations.VisibleForTesting;
-import com.yelp.nrtsearch.server.backup.VersionManager;
-import com.yelp.nrtsearch.server.luceneserver.IndexBackupUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.StateUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.backend.RemoteStateBackend;
+import com.yelp.nrtsearch.server.remote.s3.S3Backend;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
 import picocli.CommandLine;
@@ -41,7 +38,7 @@ public class GetRemoteStateCommand implements Callable<Integer> {
       names = {"-r", "--resourceName"},
       description =
           "Resource name, should be index name or \""
-              + RemoteStateBackend.GLOBAL_STATE_RESOURCE
+              + StateCommandUtils.GLOBAL_STATE_RESOURCE
               + "\"",
       required = true)
   private String resourceName;
@@ -59,12 +56,13 @@ public class GetRemoteStateCommand implements Callable<Integer> {
 
   @CommandLine.Option(
       names = {"-c", "--credsFile"},
-      description = "File holding AWS credentials, uses default locations if not set")
+      description =
+          "File holding AWS credentials; Will use DefaultCredentialProvider if this is unset.")
   private String credsFile;
 
   @CommandLine.Option(
       names = {"-p", "--credsProfile"},
-      description = "Profile to use from creds file",
+      description = "Profile to use from creds file; Neglected when credsFile is unset.",
       defaultValue = "default")
   private String credsProfile;
 
@@ -79,6 +77,12 @@ public class GetRemoteStateCommand implements Callable<Integer> {
       description = "If index resource name already has unique identifier")
   private boolean exactResourceName;
 
+  @CommandLine.Option(
+      names = {"--maxRetry"},
+      description = "Maximum number of retry attempts for S3 failed requests",
+      defaultValue = "20")
+  private int maxRetry;
+
   private AmazonS3 s3Client;
 
   @VisibleForTesting
@@ -89,20 +93,20 @@ public class GetRemoteStateCommand implements Callable<Integer> {
   @Override
   public Integer call() throws Exception {
     if (s3Client == null) {
-      s3Client = StateCommandUtils.createS3Client(bucketName, region, credsFile, credsProfile);
+      s3Client =
+          StateCommandUtils.createS3Client(bucketName, region, credsFile, credsProfile, maxRetry);
     }
-    VersionManager versionManager = new VersionManager(s3Client, bucketName);
-
+    S3Backend s3Backend = new S3Backend(bucketName, false, s3Client);
     String resolvedResourceName =
-        StateCommandUtils.getResourceName(
-            versionManager, serviceName, resourceName, exactResourceName);
-    String stateFileName =
-        IndexBackupUtils.isBackendGlobalState(resolvedResourceName)
-            ? StateUtils.GLOBAL_STATE_FILE
-            : StateUtils.INDEX_STATE_FILE;
-    String stateFileContents =
-        StateCommandUtils.getStateFileContents(
-            versionManager, serviceName, resolvedResourceName, stateFileName);
+        StateCommandUtils.getResourceName(s3Backend, serviceName, resourceName, exactResourceName);
+
+    String stateFileContents;
+    if (StateCommandUtils.isGlobalState(resourceName)) {
+      stateFileContents = StateCommandUtils.getGlobalStateFileContents(s3Backend, serviceName);
+    } else {
+      stateFileContents =
+          StateCommandUtils.getIndexStateFileContents(s3Backend, serviceName, resolvedResourceName);
+    }
     if (stateFileContents != null) {
       if (outputFile.isEmpty()) {
         System.out.println("Content: " + stateFileContents);

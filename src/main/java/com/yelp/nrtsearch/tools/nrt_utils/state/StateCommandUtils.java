@@ -17,6 +17,7 @@ package com.yelp.nrtsearch.tools.nrt_utils.state;
 
 import com.amazonaws.ClientConfiguration;
 import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.auth.profile.ProfileCredentialsProvider;
 import com.amazonaws.auth.profile.ProfilesConfigFile;
 import com.amazonaws.client.builder.AwsClientBuilder;
@@ -24,37 +25,36 @@ import com.amazonaws.retry.PredefinedRetryPolicies;
 import com.amazonaws.retry.RetryPolicy;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.amazonaws.services.s3.model.PutObjectRequest;
-import com.amazonaws.services.s3.model.S3Object;
 import com.google.protobuf.util.JsonFormat;
-import com.yelp.nrtsearch.server.backup.VersionManager;
 import com.yelp.nrtsearch.server.grpc.GlobalStateInfo;
 import com.yelp.nrtsearch.server.grpc.IndexGlobalState;
 import com.yelp.nrtsearch.server.grpc.IndexStateInfo;
-import com.yelp.nrtsearch.server.luceneserver.IndexBackupUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.BackendGlobalState;
-import com.yelp.nrtsearch.server.luceneserver.state.StateUtils;
-import com.yelp.nrtsearch.server.luceneserver.state.backend.RemoteStateBackend;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import com.yelp.nrtsearch.server.remote.RemoteBackend;
+import com.yelp.nrtsearch.server.remote.s3.S3Backend;
+import com.yelp.nrtsearch.server.state.BackendGlobalState;
+import com.yelp.nrtsearch.server.state.StateUtils;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.UUID;
-import net.jpountz.lz4.LZ4FrameInputStream;
-import net.jpountz.lz4.LZ4FrameOutputStream;
-import org.apache.commons.compress.archivers.ArchiveOutputStream;
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
-import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
-import org.apache.commons.compress.utils.IOUtils;
 
 public class StateCommandUtils {
+  public static final String GLOBAL_STATE_RESOURCE = "global_state";
+  public static final String NOT_SET = "not_set";
+
   private StateCommandUtils() {}
+
+  /**
+   * Check if the given resource name is for global state.
+   *
+   * @param resourceName resource name
+   * @return true if global state
+   */
+  public static boolean isGlobalState(String resourceName) {
+    return GLOBAL_STATE_RESOURCE.equals(resourceName);
+  }
 
   /**
    * Get an S3 client usable for remote state operations.
@@ -66,14 +66,15 @@ public class StateCommandUtils {
    * @return s3 client
    */
   public static AmazonS3 createS3Client(
-      String bucketName, String region, String credsFile, String credsProfile) {
-    ProfilesConfigFile profilesConfigFile = null;
+      String bucketName, String region, String credsFile, String credsProfile, int maxRetry) {
+    AWSCredentialsProvider awsCredentialsProvider;
     if (credsFile != null) {
       Path botoCfgPath = Paths.get(credsFile);
-      profilesConfigFile = new ProfilesConfigFile(botoCfgPath.toFile());
+      ProfilesConfigFile profilesConfigFile = new ProfilesConfigFile(botoCfgPath.toFile());
+      awsCredentialsProvider = new ProfileCredentialsProvider(profilesConfigFile, credsProfile);
+    } else {
+      awsCredentialsProvider = new DefaultAWSCredentialsProviderChain();
     }
-    AWSCredentialsProvider awsCredentialsProvider =
-        new ProfileCredentialsProvider(profilesConfigFile, credsProfile);
 
     String clientRegion;
     if (region == null) {
@@ -95,7 +96,7 @@ public class StateCommandUtils {
         new RetryPolicy(
             PredefinedRetryPolicies.DEFAULT_RETRY_CONDITION,
             PredefinedRetryPolicies.DEFAULT_BACKOFF_STRATEGY,
-            5,
+            maxRetry,
             true);
     ClientConfiguration clientConfiguration =
         new ClientConfiguration().withRetryPolicy(retryPolicy);
@@ -105,84 +106,6 @@ public class StateCommandUtils {
         .withEndpointConfiguration(
             new AwsClientBuilder.EndpointConfiguration(serviceEndpoint, clientRegion))
         .build();
-  }
-
-  /**
-   * Get the contents of the state file stored in remote state.
-   *
-   * @param versionManager state version manager
-   * @param serviceName nrtsearch cluster service name
-   * @param resourceName state resource name, for index this must include unique identifier
-   * @param stateFileName name of state file in archive
-   * @return state file contents as string
-   * @throws IOException
-   */
-  public static String getStateFileContents(
-      VersionManager versionManager, String serviceName, String resourceName, String stateFileName)
-      throws IOException {
-    String backendResourceName =
-        IndexBackupUtils.isBackendGlobalState(resourceName)
-            ? resourceName
-            : getIndexStateResource(resourceName);
-    long currentVersion = versionManager.getLatestVersionNumber(serviceName, backendResourceName);
-    if (currentVersion == -1) {
-      System.out.println(
-          "No state exists for service: " + serviceName + ", resource: " + backendResourceName);
-      return null;
-    }
-    System.out.println("Current version: " + currentVersion);
-    String versionStr =
-        versionManager.getVersionString(
-            serviceName, backendResourceName, String.valueOf(currentVersion));
-    System.out.println("Version string: " + versionStr);
-
-    String absoluteResourcePath = getStateKey(serviceName, backendResourceName, versionStr);
-    if (!versionManager
-        .getS3()
-        .doesObjectExist(versionManager.getBucketName(), absoluteResourcePath)) {
-      System.out.println("Resource does not exist: " + absoluteResourcePath);
-      return null;
-    }
-
-    String stateStr =
-        getStateFileContentsFromS3(
-            versionManager.getS3(),
-            versionManager.getBucketName(),
-            absoluteResourcePath,
-            stateFileName);
-    if (stateStr == null) {
-      System.out.println("No state file found in archive");
-    }
-    return stateStr;
-  }
-
-  /**
-   * Get the contents of a state file archive stored in S3.
-   *
-   * @param s3Client s3 client
-   * @param bucketName bucket name
-   * @param key key for state file archive
-   * @param stateFileName name of state file within archive
-   * @return contents of state file as string
-   * @throws IOException
-   */
-  public static String getStateFileContentsFromS3(
-      AmazonS3 s3Client, String bucketName, String key, String stateFileName) throws IOException {
-    S3Object stateObject = s3Client.getObject(bucketName, key);
-    InputStream contents = stateObject.getObjectContent();
-    String stateStr = null;
-    try (TarArchiveInputStream tarArchiveInputStream =
-        new TarArchiveInputStream(new LZ4FrameInputStream(contents))) {
-      for (TarArchiveEntry tarArchiveEntry = tarArchiveInputStream.getNextTarEntry();
-          tarArchiveEntry != null;
-          tarArchiveEntry = tarArchiveInputStream.getNextTarEntry()) {
-        if (tarArchiveEntry.getName().endsWith(stateFileName)) {
-          byte[] fileData = tarArchiveInputStream.readNBytes((int) tarArchiveEntry.getSize());
-          stateStr = StateUtils.fromUTF8(fileData);
-        }
-      }
-    }
-    return stateStr;
   }
 
   /**
@@ -199,78 +122,31 @@ public class StateCommandUtils {
   }
 
   /**
-   * Write the given state file data to the remote backend, and bless it.
+   * Write global state data to remote backend.
    *
-   * @param versionManager state version manager
-   * @param serviceName nrtsearch cluster service name
-   * @param resourceName state resource name, for index this must include unique identifier
-   * @param stateFileName name of state file in archive
-   * @param data utf8 encoded state file data
-   * @throws IOException
+   * @param s3Backend remote backend
+   * @param serviceName service name
+   * @param data global state utf8 data
+   * @throws IOException on error writing global state
    */
-  public static void writeStateDataToBackend(
-      VersionManager versionManager,
-      String serviceName,
-      String resourceName,
-      String stateFileName,
-      byte[] data)
-      throws IOException {
-    byte[] archiveData = buildStateFileArchive(resourceName, stateFileName, data);
-
-    String versionStr = UUID.randomUUID().toString();
-    String backendResourceName =
-        IndexBackupUtils.isBackendGlobalState(resourceName)
-            ? resourceName
-            : resourceName + IndexBackupUtils.INDEX_STATE_SUFFIX;
-    String absoluteResourcePath = getStateKey(serviceName, backendResourceName, versionStr);
-    System.out.println("Writing to resource: " + absoluteResourcePath);
-    writeDataToS3(
-        versionManager.getS3(), versionManager.getBucketName(), absoluteResourcePath, archiveData);
-    versionManager.blessVersion(serviceName, backendResourceName, versionStr);
+  public static void writeGlobalStateDataToBackend(
+      S3Backend s3Backend, String serviceName, byte[] data) throws IOException {
+    s3Backend.uploadGlobalState(serviceName, data);
   }
 
   /**
-   * Write a data buffer to an S3 object.
+   * Write index state data to remote backend.
    *
-   * @param s3Client s3 client
-   * @param bucketName bucket name
-   * @param key key for object to write
-   * @param data data buffer
+   * @param s3Backend remote backend
+   * @param serviceName service name
+   * @param indexResource index resource name
+   * @param data index state utf8 data
+   * @throws IOException on error writing index state
    */
-  public static void writeDataToS3(AmazonS3 s3Client, String bucketName, String key, byte[] data) {
-    ObjectMetadata metadata = new ObjectMetadata();
-    metadata.setContentLength(data.length);
-    s3Client.putObject(
-        new PutObjectRequest(bucketName, key, new ByteArrayInputStream(data), metadata));
-  }
-
-  /**
-   * Given the data of a state file, build an archive of the expected format and return its data.
-   *
-   * @param resourceName name of index resource
-   * @param stateFileName name of state file within archive
-   * @param data UTF-8 representation of state file
-   * @return buffer containing archive data
-   * @throws IOException
-   */
-  public static byte[] buildStateFileArchive(String resourceName, String stateFileName, byte[] data)
+  public static void writeIndexStateDataToBackend(
+      S3Backend s3Backend, String serviceName, String indexResource, byte[] data)
       throws IOException {
-    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-    try (ArchiveOutputStream archiveOutputStream =
-        new TarArchiveOutputStream(new LZ4FrameOutputStream(outputStream))) {
-      TarArchiveEntry entry = new TarArchiveEntry(resourceName + "/");
-      archiveOutputStream.putArchiveEntry(entry);
-      archiveOutputStream.closeArchiveEntry();
-
-      entry = new TarArchiveEntry(resourceName + "/" + stateFileName);
-      entry.setSize(data.length);
-      archiveOutputStream.putArchiveEntry(entry);
-      try (InputStream dataInputStream = new ByteArrayInputStream(data)) {
-        IOUtils.copy(dataInputStream, archiveOutputStream);
-      }
-      archiveOutputStream.closeArchiveEntry();
-    }
-    return outputStream.toByteArray();
+    s3Backend.uploadIndexState(serviceName, indexResource, data);
   }
 
   /**
@@ -296,11 +172,52 @@ public class StateCommandUtils {
   }
 
   /**
+   * Get global state json string from remote backend.
+   *
+   * @param s3Backend remote backend
+   * @param serviceName service name
+   * @return global state json string
+   * @throws IOException on error reading global state
+   */
+  public static String getGlobalStateFileContents(S3Backend s3Backend, String serviceName)
+      throws IOException {
+    if (!s3Backend.exists(serviceName, RemoteBackend.GlobalResourceType.GLOBAL_STATE)) {
+      System.out.println("Global state does not exist for service: " + serviceName);
+      return null;
+    }
+    InputStream stateStream = s3Backend.downloadGlobalState(serviceName);
+    byte[] stateBytes = stateStream.readAllBytes();
+    return StateUtils.fromUTF8(stateBytes);
+  }
+
+  /**
+   * Get index state json string from remote backend.
+   *
+   * @param s3Backend remote backend
+   * @param serviceName service name
+   * @param indexResource index resource name
+   * @return index state json string
+   * @throws IOException on error reading index state
+   */
+  public static String getIndexStateFileContents(
+      S3Backend s3Backend, String serviceName, String indexResource) throws IOException {
+    if (!s3Backend.exists(
+        serviceName, indexResource, RemoteBackend.IndexResourceType.INDEX_STATE)) {
+      System.out.println(
+          "Index state does not exist for service: " + serviceName + ", index: " + indexResource);
+      return null;
+    }
+    InputStream stateStream = s3Backend.downloadIndexState(serviceName, indexResource);
+    byte[] stateBytes = stateStream.readAllBytes();
+    return StateUtils.fromUTF8(stateBytes);
+  }
+
+  /**
    * Get the resolved resource name for a given input resource. If the given resource is an index
    * name, the service global state is loaded to look up the index unique id. If the resource is for
    * global state, or exactResourceName is true, it is considered to already be resolved.
    *
-   * @param versionManager state version manager
+   * @param s3Backend remote data backend
    * @param serviceName nrtsearch cluster service name
    * @param resource resource name to resolve
    * @param exactResourceName if the provided resource name is already resolved
@@ -308,9 +225,9 @@ public class StateCommandUtils {
    * @throws IOException
    */
   public static String getResourceName(
-      VersionManager versionManager, String serviceName, String resource, boolean exactResourceName)
+      S3Backend s3Backend, String serviceName, String resource, boolean exactResourceName)
       throws IOException {
-    if (IndexBackupUtils.isBackendGlobalState(resource)) {
+    if (isGlobalState(resource)) {
       System.out.println("Global state resource");
       return resource;
     }
@@ -318,12 +235,7 @@ public class StateCommandUtils {
       System.out.println("Index state resource: " + resource);
       return resource;
     }
-    String globalStateContents =
-        getStateFileContents(
-            versionManager,
-            serviceName,
-            RemoteStateBackend.GLOBAL_STATE_RESOURCE,
-            StateUtils.GLOBAL_STATE_FILE);
+    String globalStateContents = getGlobalStateFileContents(s3Backend, serviceName);
     if (globalStateContents == null) {
       throw new IllegalArgumentException(
           "Unable to load global state for cluster: \"" + serviceName + "\"");
@@ -347,36 +259,18 @@ public class StateCommandUtils {
   }
 
   /**
-   * Given an index resource (index-UUID), produce the index state resource.
+   * Parse input string into index resource type.
    *
-   * @param indexResource index resource
-   * @return index state resource
+   * @param resourceType input string
+   * @return index resource type
+   * @throws IllegalArgumentException if invalid resource type name
    */
-  public static String getIndexStateResource(String indexResource) {
-    return indexResource + IndexBackupUtils.INDEX_STATE_SUFFIX;
-  }
-
-  /**
-   * Get the S3 key for an index state object.
-   *
-   * @param serviceName nrtsearch cluster service name
-   * @param indexStateResource index state resource
-   * @param versionStr version UUID
-   * @return S3 key for state object
-   */
-  public static String getStateKey(
-      String serviceName, String indexStateResource, String versionStr) {
-    return String.format("%s/%s/%s", serviceName, indexStateResource, versionStr);
-  }
-
-  /**
-   * Get the S3 key prefix (with trailing slash) for all index state objects for a given index.
-   *
-   * @param serviceName nrtsearch cluster service name
-   * @param indexStateResource index state resource
-   * @return S3 index state key prefix
-   */
-  public static String getStateKeyPrefix(String serviceName, String indexStateResource) {
-    return String.format("%s/%s/", serviceName, indexStateResource);
+  public static RemoteBackend.IndexResourceType parseIndexResourceType(String resourceType) {
+    return switch (resourceType) {
+      case "INDEX_STATE" -> RemoteBackend.IndexResourceType.INDEX_STATE;
+      case "POINT_STATE" -> RemoteBackend.IndexResourceType.POINT_STATE;
+      case "WARMING_QUERIES" -> RemoteBackend.IndexResourceType.WARMING_QUERIES;
+      default -> throw new IllegalArgumentException("Invalid index resource type: " + resourceType);
+    };
   }
 }

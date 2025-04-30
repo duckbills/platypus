@@ -23,14 +23,12 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
-import com.amazonaws.auth.AnonymousAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
 import com.yelp.nrtsearch.server.config.IndexStartConfig.IndexDataLocationType;
 import com.yelp.nrtsearch.server.grpc.Mode;
 import com.yelp.nrtsearch.server.grpc.TestServer;
+import com.yelp.nrtsearch.test_utils.AmazonS3Provider;
 import java.io.IOException;
-import java.util.UUID;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
@@ -47,8 +45,7 @@ public class UpdateGlobalIndexStateCommandTest {
   }
 
   private AmazonS3 getS3() {
-    AmazonS3 s3 = new AmazonS3Client(new AnonymousAWSCredentials());
-    s3.setEndpoint(S3_ENDPOINT);
+    AmazonS3 s3 = AmazonS3Provider.createTestS3Client(S3_ENDPOINT);
     s3.createBucket(TEST_BUCKET);
     return s3;
   }
@@ -106,7 +103,8 @@ public class UpdateGlobalIndexStateCommandTest {
     server.commit("test_index");
     server.verifySimpleDocs("test_index", 3);
 
-    String firstIndexId = server.getGlobalState().getIndexStateManager("test_index").getIndexId();
+    String firstIndexId =
+        server.getGlobalState().getIndexStateManagerOrThrow("test_index").getIndexId();
     server.deleteIndex("test_index");
 
     server.createSimpleIndex("test_index");
@@ -115,7 +113,8 @@ public class UpdateGlobalIndexStateCommandTest {
     server.refresh("test_index");
     server.commit("test_index");
     server.verifySimpleDocs("test_index", 5);
-    String secondIndexId = server.getGlobalState().getIndexStateManager("test_index").getIndexId();
+    String secondIndexId =
+        server.getGlobalState().getIndexStateManagerOrThrow("test_index").getIndexId();
     assertNotEquals(firstIndexId, secondIndexId);
 
     CommandLine cmd = getInjectedCommand();
@@ -124,12 +123,13 @@ public class UpdateGlobalIndexStateCommandTest {
             "--serviceName=" + SERVICE_NAME,
             "--bucketName=" + TEST_BUCKET,
             "--indexName=test_index",
-            "--setUUID=" + firstIndexId);
+            "--setId=" + firstIndexId);
     assertEquals(0, exitCode);
     server.restart();
     assertTrue(server.isStarted("test_index"));
 
-    String thirdIndexId = server.getGlobalState().getIndexStateManager("test_index").getIndexId();
+    String thirdIndexId =
+        server.getGlobalState().getIndexStateManagerOrThrow("test_index").getIndexId();
     assertEquals(firstIndexId, thirdIndexId);
     server.verifySimpleDocs("test_index", 3);
   }
@@ -139,8 +139,9 @@ public class UpdateGlobalIndexStateCommandTest {
     TestServer server = getTestServer();
     server.startPrimaryIndex("test_index", -1, null);
     server.createSimpleIndex("test_index_2");
-    String indexId = server.getGlobalState().getIndexStateManager("test_index").getIndexId();
-    String index2Id = server.getGlobalState().getIndexStateManager("test_index_2").getIndexId();
+    String indexId = server.getGlobalState().getIndexStateManagerOrThrow("test_index").getIndexId();
+    String index2Id =
+        server.getGlobalState().getIndexStateManagerOrThrow("test_index_2").getIndexId();
 
     CommandLine cmd = getInjectedCommand();
     int exitCode =
@@ -160,9 +161,10 @@ public class UpdateGlobalIndexStateCommandTest {
     server.restart();
     assertTrue(server.isStarted("test_index"));
     assertFalse(server.isStarted("test_index_2"));
-    assertEquals(indexId, server.getGlobalState().getIndexStateManager("test_index").getIndexId());
     assertEquals(
-        index2Id, server.getGlobalState().getIndexStateManager("test_index_2").getIndexId());
+        indexId, server.getGlobalState().getIndexStateManagerOrThrow("test_index").getIndexId());
+    assertEquals(
+        index2Id, server.getGlobalState().getIndexStateManagerOrThrow("test_index_2").getIndexId());
   }
 
   @Test
@@ -192,10 +194,10 @@ public class UpdateGlobalIndexStateCommandTest {
   }
 
   @Test
-  public void testIndexUUIDNotInBackend() throws IOException {
+  public void testIndexIDNotInBackend() throws IOException {
     TestServer server = getTestServer();
     server.startPrimaryIndex("test_index", -1, null);
-    String indexId = server.getGlobalState().getIndexStateManager("test_index").getIndexId();
+    String indexId = server.getGlobalState().getIndexStateManagerOrThrow("test_index").getIndexId();
 
     CommandLine cmd = getInjectedCommand();
     int exitCode =
@@ -203,12 +205,13 @@ public class UpdateGlobalIndexStateCommandTest {
             "--serviceName=" + SERVICE_NAME,
             "--bucketName=" + TEST_BUCKET,
             "--indexName=not_index",
-            "--setUUID=" + UUID.randomUUID());
+            "--setId=20240820123456789");
     assertEquals(1, exitCode);
     server.restart();
 
     assertTrue(server.isStarted("test_index"));
-    assertEquals(indexId, server.getGlobalState().getIndexStateManager("test_index").getIndexId());
+    assertEquals(
+        indexId, server.getGlobalState().getIndexStateManagerOrThrow("test_index").getIndexId());
   }
 
   @Test
@@ -223,15 +226,12 @@ public class UpdateGlobalIndexStateCommandTest {
   }
 
   @Test
-  public void testValidateIndexUUID() {
+  public void testValidateIndexID() {
     assertTrue(UpdateGlobalIndexStateCommand.validateParams(null, null));
-    assertTrue(
-        UpdateGlobalIndexStateCommand.validateParams(null, "d5401128-7aed-427c-8dc3-70a3e24c7c9a"));
-    assertTrue(
-        UpdateGlobalIndexStateCommand.validateParams(null, "d5401128-7AED-427c-8dc3-70a3e24c7c9a"));
+    assertTrue(UpdateGlobalIndexStateCommand.validateParams(null, "20240820123456789"));
+    assertTrue(UpdateGlobalIndexStateCommand.validateParams(null, "19701010000000000"));
     assertFalse(UpdateGlobalIndexStateCommand.validateParams(null, ""));
     assertFalse(UpdateGlobalIndexStateCommand.validateParams(null, "invalid"));
-    assertFalse(
-        UpdateGlobalIndexStateCommand.validateParams(null, "d5401128-7AED-427c-70a3e24c7c9a"));
+    assertFalse(UpdateGlobalIndexStateCommand.validateParams(null, "20241329233759999"));
   }
 }

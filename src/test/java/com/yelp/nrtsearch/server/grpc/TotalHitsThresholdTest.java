@@ -17,10 +17,10 @@ package com.yelp.nrtsearch.server.grpc;
 
 import static org.junit.Assert.assertEquals;
 
+import com.yelp.nrtsearch.server.ServerTestCase;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest.MultiValuedField;
 import com.yelp.nrtsearch.server.grpc.SearchResponse.Hit;
 import com.yelp.nrtsearch.server.grpc.TotalHits.Relation;
-import com.yelp.nrtsearch.server.luceneserver.ServerTestCase;
 import io.grpc.testing.GrpcCleanupRule;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -93,7 +93,7 @@ public class TotalHitsThresholdTest extends ServerTestCase {
 
     assertEquals(3, response.getHitsCount());
     assertEquals(3, response.getTotalHits().getValue());
-    assertEquals(Relation.GREATER_THAN_OR_EQUAL_TO, response.getTotalHits().getRelation());
+    assertEquals(Relation.EQUAL_TO, response.getTotalHits().getRelation());
     assertScoreHit(5, "term1", response.getHits(0));
     assertScoreHit(4, "term1", response.getHits(1));
     assertScoreHit(3, "term1", response.getHits(2));
@@ -250,7 +250,7 @@ public class TotalHitsThresholdTest extends ServerTestCase {
 
     assertEquals(3, response.getHitsCount());
     assertEquals(10, response.getTotalHits().getValue());
-    assertEquals(Relation.EQUAL_TO, response.getTotalHits().getRelation());
+    assertEquals(Relation.GREATER_THAN_OR_EQUAL_TO, response.getTotalHits().getRelation());
     assertHit(0, response.getHits(0));
     assertHit(1, response.getHits(1));
     assertHit(2, response.getHits(2));

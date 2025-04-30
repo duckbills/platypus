@@ -15,10 +15,12 @@
  */
 package com.yelp.nrtsearch.server.grpc;
 
+import com.yelp.nrtsearch.server.grpc.SearchResponse.Diagnostics;
 import com.yelp.nrtsearch.server.monitoring.DeadlineMetrics;
 import io.grpc.Context;
 import io.grpc.Deadline;
 import io.grpc.Status;
+import java.util.concurrent.TimeUnit;
 
 /** Utility class for functionality related to gRPC request deadlines. */
 public class DeadlineUtils {
@@ -47,11 +49,36 @@ public class DeadlineUtils {
     if (cancellationEnabled) {
       Deadline deadline = Context.current().getDeadline();
       if (deadline != null && deadline.isExpired()) {
-        DeadlineMetrics.nrtDeadlineCancelCount.labels(operation).inc();
+        DeadlineMetrics.nrtDeadlineCancelCount.labelValues(operation).inc();
         throw Status.CANCELLED
             .withDescription("Request deadline exceeded: " + message)
             .asRuntimeException();
       }
     }
+  }
+
+  public static void checkDeadline(
+      String message, Diagnostics.Builder diagnostics, String operation) {
+    if (cancellationEnabled) {
+      Deadline deadline = Context.current().getDeadline();
+      if (deadline != null && deadline.isExpired()) {
+        DeadlineMetrics.nrtDeadlineCancelCount.labelValues(operation).inc();
+        throw Status.CANCELLED
+            .withDescription(
+                "Request deadline exceeded: "
+                    + message
+                    + ", Search Diagnostics: "
+                    + diagnostics.toString())
+            .asRuntimeException();
+      }
+    }
+  }
+
+  public static double getDeadlineRemainingMs() {
+    Deadline deadline = Context.current().getDeadline();
+    if (deadline != null) {
+      return deadline.timeRemaining(TimeUnit.MICROSECONDS) / 1000.0;
+    }
+    return 0;
   }
 }
